@@ -10,6 +10,7 @@
 //! view_mode = "single"
 //! line_wrap = false
 //! scrollbar = false
+//! strikethrough_deletions = false
 //! primary_marker = "▶"
 //! primary_marker_right = "◀"
 //! extent_marker = "▌"
@@ -42,6 +43,8 @@ pub struct UiConfig {
     pub line_wrap: bool,
     /// Show scrollbar (default: false)
     pub scrollbar: bool,
+    /// Show strikethrough on deleted text
+    pub strikethrough_deletions: bool,
     /// Marker for primary active line (left pane / single pane)
     pub primary_marker: String,
     /// Marker for right pane primary line (defaults to ◀)
@@ -60,6 +63,7 @@ impl Default for UiConfig {
             view_mode: None,
             line_wrap: false,
             scrollbar: false,
+            strikethrough_deletions: false,
             primary_marker: "▶".to_string(),
             primary_marker_right: None,
             extent_marker: "▌".to_string(),

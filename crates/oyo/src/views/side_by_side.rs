@@ -95,10 +95,12 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             for view_span in &view_line.spans {
                 let style = get_old_span_style(view_span.kind, view_line.is_active, app);
                 // For deleted spans, don't strikethrough leading whitespace
-                if matches!(
-                    view_span.kind,
-                    ViewSpanKind::Deleted | ViewSpanKind::PendingDelete
-                ) {
+                if app.strikethrough_deletions
+                    && matches!(
+                        view_span.kind,
+                        ViewSpanKind::Deleted | ViewSpanKind::PendingDelete
+                    )
+                {
                     let text = &view_span.text;
                     let trimmed = text.trim_start();
                     let leading_ws_len = text.len() - trimmed.len();
@@ -261,7 +263,11 @@ fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
     match kind {
         ViewSpanKind::Equal => Style::default().fg(Color::White),
         ViewSpanKind::Deleted => {
-            Style::default().fg(Color::Red).add_modifier(Modifier::CROSSED_OUT)
+            let mut style = Style::default().fg(Color::Red);
+            if app.strikethrough_deletions {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            style
         }
         ViewSpanKind::Inserted => {
             // In old pane, inserted content shouldn't appear
@@ -277,7 +283,7 @@ fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
                             let g = (progress * 0.5 * 255.0) as u8;
                             let b = (progress * 0.5 * 255.0) as u8;
                             let mut style = Style::default().fg(Color::Rgb(255, g, b));
-                            if progress < 0.7 {
+                            if progress < 0.7 && app.strikethrough_deletions {
                                 style = style.add_modifier(Modifier::CROSSED_OUT);
                             }
                             style
@@ -306,22 +312,26 @@ fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
                             let g = ((0.5 - progress * 0.5) * 255.0) as u8;
                             let b = ((0.5 - progress * 0.5) * 255.0) as u8;
                             let mut style = Style::default().fg(Color::Rgb(r, g, b));
-                            if progress > 0.3 {
+                            if progress > 0.3 && app.strikethrough_deletions {
                                 style = style.add_modifier(Modifier::CROSSED_OUT);
                             }
                             style
                         }
                         AnimationPhase::Idle => {
-                            Style::default()
-                                .fg(Color::Red)
-                                .add_modifier(Modifier::CROSSED_OUT)
+                            let mut style = Style::default().fg(Color::Red);
+                            if app.strikethrough_deletions {
+                                style = style.add_modifier(Modifier::CROSSED_OUT);
+                            }
+                            style
                         }
                     }
                 }
             } else {
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::CROSSED_OUT)
+                let mut style = Style::default().fg(Color::Red);
+                if app.strikethrough_deletions {
+                    style = style.add_modifier(Modifier::CROSSED_OUT);
+                }
+                style
             }
         }
         ViewSpanKind::PendingInsert => {

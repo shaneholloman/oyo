@@ -249,6 +249,7 @@ fn main() -> Result<()> {
     app.auto_center = config.ui.auto_center;
     app.line_wrap = config.ui.line_wrap;
     app.scrollbar_visible = config.ui.scrollbar;
+    app.strikethrough_deletions = config.ui.strikethrough_deletions;
     app.auto_step_on_enter = config.playback.auto_step_on_enter;
     app.primary_marker = config.ui.primary_marker.clone();
     app.primary_marker_right = config.ui.primary_marker_right
@@ -473,6 +474,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             app.reset_count();
                             // Toggle line wrap
                             app.toggle_line_wrap();
+                        }
+                        KeyCode::Char('s') => {
+                            app.reset_count();
+                            // Toggle strikethrough for deletions
+                            app.toggle_strikethrough_deletions();
                         }
                         KeyCode::Char('H') => {
                             // Scroll left (horizontal)

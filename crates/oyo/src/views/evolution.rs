@@ -128,10 +128,12 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         for view_span in &view_line.spans {
             let style = get_evolution_span_style(view_span.kind, view_line.kind, view_line.is_active, app);
             // For deleted spans, don't strikethrough leading whitespace
-            if matches!(
-                view_span.kind,
-                ViewSpanKind::Deleted | ViewSpanKind::PendingDelete
-            ) {
+            if app.strikethrough_deletions
+                && matches!(
+                    view_span.kind,
+                    ViewSpanKind::Deleted | ViewSpanKind::PendingDelete
+                )
+            {
                 let text = &view_span.text;
                 let trimmed = text.trim_start();
                 let leading_ws_len = text.len() - trimmed.len();
@@ -313,7 +315,7 @@ fn get_pending_delete_style(app: &App) -> Style {
                 let b = (intensity * 0.2) as u8;
 
                 let mut style = Style::default().fg(Color::Rgb(r, g, b));
-                if progress > 0.2 {
+                if progress > 0.2 && app.strikethrough_deletions {
                     style = style.add_modifier(Modifier::CROSSED_OUT);
                 }
                 if progress > 0.5 {

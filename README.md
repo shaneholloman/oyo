@@ -108,6 +108,7 @@ Recommended git aliases in `~/.gitconfig`:
 | `Z` | Toggle zen mode |
 | `a` | Toggle animations |
 | `w` | Toggle line wrap |
+| `s` | Toggle strikethrough |
 | `r` | Refresh file (or all files when file list focused) |
 | `f` | Toggle file panel |
 | `]` | Next file (supports count) |
@@ -127,6 +128,7 @@ auto_center = true          # Auto-center on active change (default: true)
 view_mode = "single"        # Default: "single", "side-by-side", or "evolution"
 line_wrap = false           # Wrap long lines (default: false, uses horizontal scroll)
 scrollbar = false           # Show scrollbar (default: false)
+strikethrough_deletions = false # Show strikethrough on deleted text
 primary_marker = "▶"        # Marker for primary active line (single-width char recommended)
 primary_marker_right = "◀"  # Right pane marker (optional, defaults to ◀)
 extent_marker = "▌"         # Left pane extent marker (Left Half Block)

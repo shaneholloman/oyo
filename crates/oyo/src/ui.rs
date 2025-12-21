@@ -306,7 +306,7 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
 
     // Calculate popover size and position (centered)
     let popup_width = 44u16.min(area.width.saturating_sub(4));
-    let base_height = if app.is_multi_file() { 30 } else { 25 };
+    let base_height = if app.is_multi_file() { 31 } else { 26 };
     let popup_height = (base_height as u16).min(area.height.saturating_sub(4));
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
     let popup_y = (area.height.saturating_sub(popup_height)) / 2;
@@ -341,6 +341,7 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
         help_line("^G", "Show full file path".into()),
         help_line("z", "Center on active".into()),
         help_line("w", "Toggle line wrap".into()),
+        help_line("s", "Toggle strikethrough".into()),
         Line::from(""),
         Line::from(Span::styled(" Playback", section_style)),
         help_line("Space", "Toggle autoplay".into()),

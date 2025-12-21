@@ -94,6 +94,8 @@ pub struct App {
     pub line_wrap: bool,
     /// Show scrollbar
     pub scrollbar_visible: bool,
+    /// Show strikethrough on deleted text
+    pub strikethrough_deletions: bool,
     /// Whether user has manually toggled the file panel (overrides auto-hide)
     pub file_panel_manually_set: bool,
     /// Whether to show the file path popup (Ctrl+G)
@@ -168,6 +170,7 @@ impl App {
             horizontal_scrolls: vec![0; file_count],
             line_wrap: false,
             scrollbar_visible: false,
+            strikethrough_deletions: false,
             file_panel_manually_set: false,
             show_path_popup: false,
             file_panel_auto_hidden: false,
@@ -422,6 +425,10 @@ impl App {
         if self.line_wrap {
             self.horizontal_scroll = 0;
         }
+    }
+
+    pub fn toggle_strikethrough_deletions(&mut self) {
+        self.strikethrough_deletions = !self.strikethrough_deletions;
     }
 
     pub fn increase_speed(&mut self) {
