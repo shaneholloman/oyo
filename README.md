@@ -8,8 +8,8 @@ Step through changes one at a time and watch the code transform, unlike traditio
 - **Hunk navigation**: Jump between groups of related changes (hunks) with `h` and `l`
 - **Animated transitions**: Smooth fade in/out animations as changes are applied
 - **Three view modes**:
-  - **Single pane**: Watch the code morph from old to new state
-  - **Side-by-side**: See old and new versions with synchronized stepping
+  - **Single**: Watch the code morph from old to new state
+  - **Split**: See old and new versions with synchronized stepping
   - **Evolution**: Watch the file evolve, deletions simply disappear
 - **Git integration**: Works as a git external diff tool or standalone
 - **Word-level diffing**: See exactly which words changed within a line
@@ -39,8 +39,8 @@ oyo
 # Compare two files
 oyo old.rs new.rs
 
-# Side-by-side view
-oyo old.rs new.rs --view side-by-side
+# Split view
+oyo old.rs new.rs --view split
 
 # Evolution view
 oyo old.rs new.rs --view evolution
@@ -125,7 +125,7 @@ Create a config file at `~/.config/oyo/config.toml`:
 ```toml
 [ui]
 auto_center = true          # Auto-center on active change (default: true)
-view_mode = "single"        # Default: "single", "side-by-side", or "evolution"
+view_mode = "single"        # Default: "single", "split", or "evolution"
 line_wrap = false           # Wrap long lines (default: false, uses horizontal scroll)
 scrollbar = false           # Show scrollbar (default: false)
 strikethrough_deletions = false # Show strikethrough on deleted text

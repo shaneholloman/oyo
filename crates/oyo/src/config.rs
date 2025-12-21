@@ -38,7 +38,7 @@ pub struct UiConfig {
     pub zen: bool,
     /// Auto-center on active change after stepping (like vim's zz)
     pub auto_center: bool,
-    /// Default view mode: "single", "side-by-side", or "evolution"
+    /// Default view mode: "single", "split", or "evolution"
     pub view_mode: Option<String>,
     /// Enable line wrapping (default: false, uses horizontal scroll instead)
     pub line_wrap: bool,
@@ -181,7 +181,7 @@ impl Config {
     pub fn parse_view_mode(&self) -> Option<crate::app::ViewMode> {
         self.ui.view_mode.as_ref().and_then(|s| match s.as_str() {
             "single" => Some(crate::app::ViewMode::SinglePane),
-            "side-by-side" | "sbs" | "split" => Some(crate::app::ViewMode::SideBySide),
+            "split" | "sbs" => Some(crate::app::ViewMode::Split),
             "evolution" | "evo" => Some(crate::app::ViewMode::Evolution),
             _ => None,
         })

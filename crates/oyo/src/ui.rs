@@ -1,7 +1,7 @@
 //! UI rendering for the TUI
 
 use crate::app::{AnimationPhase, App, ViewMode};
-use crate::views::{render_evolution, render_side_by_side, render_single_pane};
+use crate::views::{render_evolution, render_split, render_single_pane};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -50,12 +50,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Status bar
+                Constraint::Length(2), // Status bar with top padding
             ])
             .split(frame.area());
 
         draw_content(frame, app, chunks[0]);
-        draw_status_bar(frame, app, chunks[1]);
+
+        // Status bar with top padding only
+        let footer_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Top padding
+                Constraint::Length(1), // Status bar content
+            ])
+            .split(chunks[1]);
+        draw_status_bar(frame, app, footer_chunks[1]);
     }
 
     // Draw help popover if active
@@ -75,17 +84,17 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // View mode indicator
     let mode = match app.view_mode {
-        ViewMode::SinglePane => " Single",
-        ViewMode::SideBySide => " Split",
-        ViewMode::Evolution => " Evolution",
+        ViewMode::SinglePane => " SINGLE",
+        ViewMode::Split => " SPLIT",
+        ViewMode::Evolution => " EVOLUTION",
     };
 
-    // Format: Single  main  filepath.rs ▶ 2/10 +2 -2         1/2
+    // Format: SINGLE  filepath.rs:main ▶ 2/10 +2 -2         1/2
     let file_path = app.current_file_path();
     let available_width = area.width as usize;
-    // Reserve space for mode, branch, separator, step counter, stats, file counter
-    let branch_len = app.git_branch.as_ref().map(|b| b.len() + 2).unwrap_or(0);
-    let path_max_width = available_width.saturating_sub(50 + branch_len);
+    // Reserve space for mode, path:branch, step counter, stats, file counter
+    let branch_suffix_len = app.git_branch.as_ref().map(|b| b.len() + 1).unwrap_or(0); // ":branch"
+    let path_max_width = available_width.saturating_sub(50 + branch_suffix_len);
 
     // On narrow viewports, show just the filename
     let display_path = if available_width < 80 {
@@ -94,6 +103,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         truncate_path(&file_path, path_max_width)
     };
+
+    // Branch suffix for git mode (":main")
+    let branch_suffix = app.git_branch.as_ref().map(|b| format!(":{}", b));
 
     // Step counter and arrow (flash when autoplay is on)
     let step_text = format!("{}/{}", state.current_step + 1, state.total_steps);
@@ -127,7 +139,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let file_text = format!("{}/{}", current_file, file_count);
 
     // Calculate padding to push file counter to the right
-    let left_content_width = mode.len() + 2 + branch_len + display_path.len() + 3 + step_text.len() + 1
+    let left_content_width = mode.len() + 2 + display_path.len() + branch_suffix_len + 3 + step_text.len() + 1
         + hunk_len + format!("+{}", insertions).len() + 1 + format!("-{}", deletions).len();
     let right_width = file_text.len();
     let padding = (area.width as usize).saturating_sub(left_content_width + right_width + 1);
@@ -138,14 +150,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::raw("  "),
     ];
 
-    // Add git branch if available
-    if let Some(ref branch) = app.git_branch {
-        spans.push(Span::styled(branch.as_str(), Style::default().fg(Color::Cyan)));
-        spans.push(Span::raw("  "));
+    spans.push(Span::styled(display_path, Style::default().fg(Color::White)));
+
+    // Add branch suffix if in git mode (":main")
+    if let Some(ref suffix) = branch_suffix {
+        spans.push(Span::styled(suffix.clone(), Style::default().fg(Color::White)));
     }
 
     spans.extend([
-        Span::styled(display_path, Style::default().fg(Color::White)),
         Span::styled(" ▶", arrow_style),
         Span::styled(step_text, step_style),
         Span::raw(" "),
@@ -279,7 +291,7 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.view_mode {
         ViewMode::SinglePane => render_single_pane(frame, app, area),
-        ViewMode::SideBySide => render_side_by_side(frame, app, area),
+        ViewMode::Split => render_split(frame, app, area),
         ViewMode::Evolution => render_evolution(frame, app, area),
     }
 }

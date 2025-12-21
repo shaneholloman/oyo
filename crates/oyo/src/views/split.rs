@@ -1,4 +1,4 @@
-//! Side-by-side view with synchronized stepping
+//! Split view with synchronized stepping
 
 use crate::app::{AnimationPhase, App};
 use ratatui::{
@@ -13,8 +13,8 @@ use oyo_core::{LineKind, ViewSpanKind};
 /// Width of the fixed line number gutter
 const GUTTER_WIDTH: u16 = 6; // "▶1234 " or " 1234 "
 
-/// Render the side-by-side view
-pub fn render_side_by_side(frame: &mut Frame, app: &mut App, area: Rect) {
+/// Render the split view
+pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_height = area.height as usize;
     app.ensure_active_visible_if_needed(visible_height);
     let animation_frame = app.animation_frame();

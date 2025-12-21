@@ -20,8 +20,8 @@ pub enum ViewMode {
     /// Single pane showing both old and new with markers
     #[default]
     SinglePane,
-    /// Side-by-side view with old on left, new on right
-    SideBySide,
+    /// Split view with old on left, new on right
+    Split,
     /// Evolution view - shows file morphing, deletions just disappear
     Evolution,
 }
@@ -30,8 +30,8 @@ impl ViewMode {
     /// Cycle to the next view mode
     pub fn next(self) -> Self {
         match self {
-            ViewMode::SinglePane => ViewMode::SideBySide,
-            ViewMode::SideBySide => ViewMode::Evolution,
+            ViewMode::SinglePane => ViewMode::Split,
+            ViewMode::Split => ViewMode::Evolution,
             ViewMode::Evolution => ViewMode::SinglePane,
         }
     }

@@ -11,8 +11,8 @@ use ratatui::{
 };
 use oyo_core::{LineKind, ViewSpanKind};
 
-/// Width of the fixed line number gutter (marker + line num + space)
-const GUTTER_WIDTH: u16 = 7; // "▶ 1234 "
+/// Width of the fixed line number gutter (marker + line num + space + blank sign + space)
+const GUTTER_WIDTH: u16 = 8; // "▶1234   " (matches single-pane width)
 
 /// Render the evolution view - file morphing without deletion markers
 pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -106,19 +106,21 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         };
 
         // Gutter marker: primary marker for focus, extent marker for hunk, blank otherwise
-        // Add trailing space to maintain consistent gutter width
         let (active_marker, active_style) = if view_line.is_primary_active {
-            (format!("{} ", primary_marker), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            (primary_marker.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
         } else if view_line.is_active {
-            (format!("{} ", extent_marker), Style::default().fg(Color::DarkGray))
+            (extent_marker.as_str(), Style::default().fg(Color::DarkGray))
         } else {
-            ("  ".to_string(), Style::default())
+            (" ", Style::default())
         };
 
         // Build gutter line (fixed, no horizontal scroll)
+        // Matches single-pane: marker(1) + line_num(4) + space(1) + blank_sign(1) + space(1) = 8
         let gutter_spans = vec![
             Span::styled(active_marker, active_style),
             Span::styled(line_num_str, line_num_style),
+            Span::styled(" ", Style::default()),
+            Span::styled(" ", Style::default()), // blank sign column (matches single-pane)
             Span::styled(" ", Style::default()),
         ];
         gutter_lines.push(Line::from(gutter_spans));

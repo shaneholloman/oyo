@@ -28,7 +28,7 @@ struct Args {
     #[arg(num_args = 0..)]
     paths: Vec<PathBuf>,
 
-    /// View mode: single, side-by-side, or evolution
+    /// View mode: single, split, or evolution
     #[arg(short, long, default_value = "single")]
     view: CliViewMode,
 
@@ -45,9 +45,9 @@ struct Args {
 enum CliViewMode {
     /// Single pane that morphs from old to new state
     Single,
-    /// Side-by-side view with synchronized stepping
+    /// Split view with synchronized stepping
     #[value(alias = "sbs")]
-    SideBySide,
+    Split,
     /// Evolution view - shows file morphing, deletions just disappear
     #[value(alias = "evo")]
     Evolution,
@@ -57,7 +57,7 @@ impl From<CliViewMode> for ViewMode {
     fn from(mode: CliViewMode) -> Self {
         match mode {
             CliViewMode::Single => ViewMode::SinglePane,
-            CliViewMode::SideBySide => ViewMode::SideBySide,
+            CliViewMode::Split => ViewMode::Split,
             CliViewMode::Evolution => ViewMode::Evolution,
         }
     }
