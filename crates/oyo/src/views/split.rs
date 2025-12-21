@@ -73,10 +73,10 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let line_num_str = format!("{:4}", old_line_num);
 
-            // Gutter marker: primary marker for focus, extent marker for hunk, blank otherwise
+            // Gutter marker: primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
                 (primary_marker.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-            } else if view_line.is_active {
+            } else if view_line.show_hunk_extent {
                 (extent_marker.as_str(), Style::default().fg(Color::DarkGray))
             } else {
                 (" ", Style::default())
@@ -200,10 +200,10 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let line_num_str = format!("{:4}", new_line_num);
 
-            // Gutter marker: right-pane primary marker for focus, extent marker for hunk, blank otherwise
+            // Gutter marker: right-pane primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
                 (primary_marker_right.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-            } else if view_line.is_active {
+            } else if view_line.show_hunk_extent {
                 (extent_marker_right.as_str(), Style::default().fg(Color::DarkGray))
             } else {
                 (" ", Style::default())

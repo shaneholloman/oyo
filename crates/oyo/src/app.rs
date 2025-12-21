@@ -116,7 +116,7 @@ pub struct App {
     pub extent_marker: String,
     /// Marker for right pane extent lines
     pub extent_marker_right: String,
-    /// Clear active change after next render (for one-frame extent marker display)
+    /// Clear active change after next render (for one-frame animation styling)
     pub clear_active_on_next_render: bool,
 }
 

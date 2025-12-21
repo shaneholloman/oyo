@@ -42,6 +42,9 @@ pub struct StepState {
     pub current_hunk: usize,
     /// Total number of hunks
     pub total_hunks: usize,
+    /// True if the last navigation was a hunk navigation (for extent marker display)
+    #[serde(default)]
+    pub last_nav_was_hunk: bool,
 }
 
 impl StepState {
@@ -55,6 +58,7 @@ impl StepState {
             step_direction: StepDirection::None,
             current_hunk: 0,
             total_hunks,
+            last_nav_was_hunk: false,
         }
     }
 
@@ -125,6 +129,7 @@ impl DiffNavigator {
 
         self.state.step_direction = StepDirection::Forward;
         self.state.animating_hunk = None; // Clear hunk animation for single-step
+        self.state.last_nav_was_hunk = false; // Clear hunk nav flag for single-step
 
         // Get the next change to apply
         let change_idx = self.state.current_step;
@@ -152,6 +157,7 @@ impl DiffNavigator {
 
         self.state.step_direction = StepDirection::Backward;
         self.state.animating_hunk = None; // Clear hunk animation for single-step
+        self.state.last_nav_was_hunk = false; // Clear hunk nav flag for single-step
         self.state.current_step -= 1;
 
         // Pop the change and set it as active for backward animation
@@ -200,6 +206,7 @@ impl DiffNavigator {
         self.state.active_change = None;
         self.state.animating_hunk = None;
         self.state.current_hunk = 0;
+        self.state.last_nav_was_hunk = false; // Clear hunk nav flag on goto
 
         // Apply changes up to target step
         for _ in 0..target_step {
@@ -270,6 +277,9 @@ impl DiffNavigator {
             return self.next_hunk();
         }
 
+        // Set after all internal calls to avoid being cleared
+        self.state.last_nav_was_hunk = true;
+
         moved
     }
 
@@ -331,6 +341,9 @@ impl DiffNavigator {
 
         // Animation state cleared by CLI after animation completes
 
+        // Set after all internal calls to avoid being cleared
+        self.state.last_nav_was_hunk = true;
+
         moved
     }
 
@@ -356,6 +369,9 @@ impl DiffNavigator {
         }
 
         self.state.active_change = self.diff.hunks[hunk_idx].change_ids.last().copied();
+
+        // Set after all internal calls to avoid being cleared
+        self.state.last_nav_was_hunk = true;
     }
 
     /// Update current hunk based on applied changes
@@ -398,6 +414,14 @@ impl DiffNavigator {
             }
         }
         false
+    }
+
+    /// Check if a change belongs to the current hunk (for persistent extent markers)
+    fn is_change_in_current_hunk(&self, change_id: usize) -> bool {
+        self.diff.hunks
+            .get(self.state.current_hunk)
+            .map(|hunk| hunk.change_ids.contains(&change_id))
+            .unwrap_or(false)
     }
 
     /// Get the currently active change
@@ -453,6 +477,9 @@ impl DiffNavigator {
             let is_in_hunk = self.is_change_in_animating_hunk(change.id);
             let is_active_change = self.state.active_change == Some(change.id);
             let is_active = is_active_change || is_in_hunk;
+            // Show extent marker if animating hunk OR (last nav was hunk AND change in current hunk)
+            let show_hunk_extent = is_in_hunk ||
+                (self.state.last_nav_was_hunk && self.is_change_in_current_hunk(change.id));
 
             // Fallback: if primary_change_id is None but we're in an animating hunk,
             // first active line becomes primary
@@ -473,14 +500,14 @@ impl DiffNavigator {
 
             if is_word_level {
                 // Combine all spans into a single line
-                let line = self.build_word_level_line(change, is_applied, is_active, is_primary_active, frame);
+                let line = self.build_word_level_line(change, is_applied, is_active, is_primary_active, show_hunk_extent, frame);
                 if let Some(l) = line {
                     lines.push(l);
                 }
             } else {
                 // Single span - handle as before
                 if let Some(span) = change.spans.first() {
-                    if let Some(line) = self.build_single_span_line(span, is_applied, is_active, is_primary_active, frame) {
+                    if let Some(line) = self.build_single_span_line(span, is_applied, is_active, is_primary_active, show_hunk_extent, frame) {
                         lines.push(line);
                     }
                 }
@@ -512,6 +539,7 @@ impl DiffNavigator {
         is_applied: bool,
         is_active: bool,
         is_primary_active: bool,
+        show_hunk_extent: bool,
         frame: AnimationFrame,
     ) -> Option<ViewLine> {
         let first_span = change.spans.first()?;
@@ -635,6 +663,7 @@ impl DiffNavigator {
             new_line,
             is_active,
             is_primary_active,
+            show_hunk_extent,
         })
     }
 
@@ -644,6 +673,7 @@ impl DiffNavigator {
         is_applied: bool,
         is_active: bool,
         is_primary_active: bool,
+        show_hunk_extent: bool,
         frame: AnimationFrame,
     ) -> Option<ViewLine> {
         let view_span_kind;
@@ -721,6 +751,7 @@ impl DiffNavigator {
             new_line: span.new_line,
             is_active,
             is_primary_active,
+            show_hunk_extent,
         })
     }
 
@@ -767,6 +798,8 @@ pub struct ViewLine {
     pub is_active: bool,
     /// The primary focus line within the hunk (for gutter marker)
     pub is_primary_active: bool,
+    /// Show extent marker (true only during hunk navigation)
+    pub show_hunk_extent: bool,
 }
 
 /// The kind of line in the view
