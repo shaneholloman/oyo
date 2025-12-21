@@ -141,6 +141,7 @@ autoplay = false            # Start with autoplay enabled
 animation = false           # Enable fade animations
 animation_duration = 150    # Animation duration per phase (ms)
 auto_step_on_enter = false  # Auto-step to first change when entering a file
+auto_step_blank_files = true # Auto-step when file would be blank at step 0 (new files)
 
 [files]
 panel_visible = true        # Show file panel in multi-file mode

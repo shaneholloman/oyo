@@ -277,6 +277,22 @@ impl MultiFileDiff {
         })
     }
 
+    /// Check if current file's old content is empty
+    pub fn current_old_is_empty(&self) -> bool {
+        self.old_contents
+            .get(self.selected_index)
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+    }
+
+    /// Check if current file's new content is empty
+    pub fn current_new_is_empty(&self) -> bool {
+        self.new_contents
+            .get(self.selected_index)
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+    }
+
     /// Refresh all files from git (re-scan for uncommitted changes)
     /// Returns true if successful, false if not in git mode
     pub fn refresh_all_from_git(&mut self) -> bool {

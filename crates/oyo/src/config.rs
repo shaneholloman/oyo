@@ -21,6 +21,7 @@
 //! autoplay = false
 //! animation = false
 //! auto_step_on_enter = false
+//! auto_step_blank_files = true
 //!
 //! [files]
 //! panel_visible = true
@@ -86,6 +87,8 @@ pub struct PlaybackConfig {
     pub animation_duration: u64,
     /// Auto-step to first change when entering a file at step 0
     pub auto_step_on_enter: bool,
+    /// Auto-step when file would be blank at step 0 (new files)
+    pub auto_step_blank_files: bool,
 }
 
 impl Default for PlaybackConfig {
@@ -96,6 +99,7 @@ impl Default for PlaybackConfig {
             animation: false,
             animation_duration: 150,
             auto_step_on_enter: false,
+            auto_step_blank_files: true,
         }
     }
 }

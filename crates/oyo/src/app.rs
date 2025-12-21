@@ -104,6 +104,8 @@ pub struct App {
     pub file_panel_auto_hidden: bool,
     /// Auto-step to first change when entering a file at step 0
     pub auto_step_on_enter: bool,
+    /// Auto-step when file would be blank at step 0 (new files)
+    pub auto_step_blank_files: bool,
     /// Manual center was requested (zz), enables overscroll until manual scroll
     pub centered_once: bool,
     /// Marker for primary active line (left pane / single pane)
@@ -175,6 +177,7 @@ impl App {
             show_path_popup: false,
             file_panel_auto_hidden: false,
             auto_step_on_enter: false,
+            auto_step_blank_files: true,
             centered_once: false,
             primary_marker: "▶".to_string(),
             primary_marker_right: "◀".to_string(),
@@ -488,6 +491,11 @@ impl App {
         self.handle_file_enter();
     }
 
+    /// Check if current file would be blank at step 0 (new file: empty old, non-empty new)
+    fn is_blank_at_step0(&self) -> bool {
+        self.multi_diff.current_old_is_empty() && !self.multi_diff.current_new_is_empty()
+    }
+
     /// Handle entering a file (marks visited, optionally auto-steps to first change)
     /// Called on initial file and when switching files.
     pub fn handle_file_enter(&mut self) {
@@ -501,17 +509,23 @@ impl App {
         // Mark as visited
         self.files_visited[idx] = true;
 
-        // Only auto-step if enabled in config
-        if !self.auto_step_on_enter {
+        let state = self.multi_diff.current_navigator().state();
+        let at_step_0 = state.current_step == 0;
+        let has_steps = state.total_steps > 1;
+
+        if !at_step_0 || !has_steps {
             return;
         }
 
-        // Don't auto-step in Evolution mode
-        if self.view_mode != ViewMode::Evolution {
-            let state = self.multi_diff.current_navigator().state();
-            if state.current_step == 0 && state.total_steps > 0 {
-                self.next_step();
-            }
+        // Auto-step for blank files (new files) regardless of view mode
+        if self.auto_step_blank_files && self.is_blank_at_step0() {
+            self.next_step();
+            return;
+        }
+
+        // Regular auto-step on enter (not for Evolution mode)
+        if self.auto_step_on_enter && self.view_mode != ViewMode::Evolution {
+            self.next_step();
         }
     }
 

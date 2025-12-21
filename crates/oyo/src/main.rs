@@ -251,6 +251,7 @@ fn main() -> Result<()> {
     app.scrollbar_visible = config.ui.scrollbar;
     app.strikethrough_deletions = config.ui.strikethrough_deletions;
     app.auto_step_on_enter = config.playback.auto_step_on_enter;
+    app.auto_step_blank_files = config.playback.auto_step_blank_files;
     app.primary_marker = config.ui.primary_marker.clone();
     app.primary_marker_right = config.ui.primary_marker_right
         .clone()
@@ -260,7 +261,7 @@ fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| "▐".to_string());
 
-    // Handle initial file enter (respects auto_step_on_enter config)
+    // Handle initial file enter (respects auto_step_blank_files and auto_step_on_enter)
     app.handle_file_enter();
 
     // Run event loop
