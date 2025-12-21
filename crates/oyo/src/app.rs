@@ -1,5 +1,6 @@
 //! Application state and logic
 
+use crate::config::ResolvedTheme;
 use oyo_core::{AnimationFrame, MultiFileDiff, StepDirection, StepState};
 use std::time::{Duration, Instant};
 
@@ -118,6 +119,8 @@ pub struct App {
     pub extent_marker_right: String,
     /// Clear active change after next render (for one-frame animation styling)
     pub clear_active_on_next_render: bool,
+    /// Resolved theme (colors, gradients)
+    pub theme: ResolvedTheme,
 }
 
 /// Pure helper: determine if overscroll should be allowed
@@ -184,6 +187,7 @@ impl App {
             extent_marker: "▌".to_string(),
             extent_marker_right: "▐".to_string(),
             clear_active_on_next_render: false,
+            theme: ResolvedTheme::default(),
         }
     }
 

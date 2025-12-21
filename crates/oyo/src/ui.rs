@@ -1,10 +1,10 @@
 //! UI rendering for the TUI
 
-use crate::app::{AnimationPhase, App, ViewMode};
+use crate::app::{App, ViewMode};
 use crate::views::{render_evolution, render_split, render_single_pane};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
@@ -50,21 +50,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),    // Main content
-                Constraint::Length(2), // Status bar with top padding
+                Constraint::Length(1), // Bottom spacer
+                Constraint::Length(1), // Status bar
             ])
             .split(frame.area());
 
         draw_content(frame, app, chunks[0]);
 
-        // Status bar with top padding only
-        let footer_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Top padding
-                Constraint::Length(1), // Status bar content
-            ])
-            .split(chunks[1]);
-        draw_status_bar(frame, app, footer_chunks[1]);
+        // Spacer with background
+        if let Some(bg) = app.theme.background {
+            let spacer = Paragraph::new("").style(Style::default().bg(bg));
+            frame.render_widget(spacer, chunks[1]);
+        }
+
+        draw_status_bar(frame, app, chunks[2]);
     }
 
     // Draw help popover if active
@@ -116,12 +115,12 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             .as_millis()
             / 500) % 2 == 0;
         if flash {
-            (Style::default().fg(Color::Yellow), Style::default().fg(Color::Yellow))
+            (Style::default().fg(app.theme.warning), Style::default().fg(app.theme.warning))
         } else {
-            (Style::default().fg(Color::Rgb(180, 140, 0)), Style::default().fg(Color::Rgb(180, 140, 0)))
+            (Style::default().fg(app.theme.warning_dim()), Style::default().fg(app.theme.warning_dim()))
         }
     } else {
-        (Style::default().fg(Color::DarkGray), Style::default().fg(Color::White))
+        (Style::default().fg(app.theme.text_muted), Style::default().fg(app.theme.text))
     };
 
     // Hunk counter
@@ -146,15 +145,15 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Build the status line
     let mut spans = vec![
-        Span::styled(mode, Style::default().fg(Color::Magenta)),
+        Span::styled(mode, Style::default().fg(app.theme.primary)),
         Span::raw("  "),
     ];
 
-    spans.push(Span::styled(display_path, Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(display_path, Style::default().fg(app.theme.text_muted)));
 
     // Add branch suffix if in git mode (":main")
     if let Some(ref suffix) = branch_suffix {
-        spans.push(Span::styled(suffix.clone(), Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(suffix.clone(), Style::default().fg(app.theme.text_muted)));
     }
 
     spans.extend([
@@ -165,20 +164,24 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Add hunk counter if there are multiple hunks
     if let Some(ref hunk) = hunk_text {
-        spans.push(Span::styled(hunk.clone(), Style::default().fg(Color::Blue)));
+        spans.push(Span::styled(hunk.clone(), Style::default().fg(app.theme.diff_line_number)));
         spans.push(Span::raw(" "));
     }
 
     spans.extend([
-        Span::styled(format!("+{}", insertions), Style::default().fg(Color::Green)),
+        Span::styled(format!("+{}", insertions), Style::default().fg(app.theme.success)),
         Span::raw(" "),
-        Span::styled(format!("-{}", deletions), Style::default().fg(Color::Red)),
+        Span::styled(format!("-{}", deletions), Style::default().fg(app.theme.error)),
         Span::raw(" ".repeat(padding.max(1))),
-        Span::styled(file_text, Style::default().fg(Color::DarkGray)),
+        Span::styled(file_text, Style::default().fg(app.theme.text_muted)),
     ]);
 
     let status_line = Line::from(spans);
-    frame.render_widget(Paragraph::new(status_line), area);
+    let mut paragraph = Paragraph::new(status_line);
+    if let Some(bg) = app.theme.background {
+        paragraph = paragraph.style(Style::default().bg(bg));
+    }
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_content(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -234,22 +237,22 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 FileStatus::Renamed => "→",
             };
 
-            let status_style = match file.status {
-                FileStatus::Added | FileStatus::Untracked => Style::default().fg(Color::Green),
-                FileStatus::Deleted => Style::default().fg(Color::Red),
-                FileStatus::Modified => Style::default().fg(Color::Yellow),
-                FileStatus::Renamed => Style::default().fg(Color::Cyan),
+            let mut status_style = match file.status {
+                FileStatus::Added | FileStatus::Untracked => Style::default().fg(app.theme.success),
+                FileStatus::Deleted => Style::default().fg(app.theme.error),
+                FileStatus::Modified => Style::default().fg(app.theme.warning),
+                FileStatus::Renamed => Style::default().fg(app.theme.info),
             };
 
             let is_selected = idx == app.multi_diff.selected_index;
-            let base_style = if is_selected {
+            let selected_bg = if is_selected {
                 if app.file_list_focused {
-                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                    app.theme.background_element.or(app.theme.background_panel)
                 } else {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    app.theme.background_panel
                 }
             } else {
-                Style::default()
+                None
             };
 
             // Truncate filename to fit
@@ -262,10 +265,27 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
             let stats = format!("+{} -{}", file.insertions, file.deletions);
 
+            if let Some(bg) = selected_bg {
+                status_style = status_style.bg(bg);
+            }
+
+            let mut name_style = Style::default().fg(app.theme.text);
+            if is_selected && app.file_list_focused {
+                name_style = name_style.add_modifier(Modifier::BOLD);
+            }
+            if let Some(bg) = selected_bg {
+                name_style = name_style.bg(bg);
+            }
+
+            let mut stats_style = Style::default().fg(app.theme.text_muted);
+            if let Some(bg) = selected_bg {
+                stats_style = stats_style.bg(bg);
+            }
+
             let line = Line::from(vec![
                 Span::styled(format!("{} ", status_icon), status_style),
-                Span::styled(format!("{:<width$}", name, width = max_name_len), base_style),
-                Span::styled(format!(" {:>8}", stats), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("{:<width$}", name, width = max_name_len), name_style),
+                Span::styled(format!(" {:>8}", stats), stats_style),
             ]);
 
             ListItem::new(line)
@@ -273,17 +293,19 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let border_style = if app.file_list_focused {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(app.theme.border_active)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(app.theme.border)
     };
 
-    let file_list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::RIGHT)
-                .border_style(border_style),
-        );
+    let mut block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(border_style);
+    if let Some(bg) = app.theme.background_panel.or(app.theme.background) {
+        block = block.style(Style::default().bg(bg));
+    }
+
+    let file_list = List::new(items).block(block);
 
     frame.render_widget(file_list, area);
 }
@@ -308,7 +330,7 @@ fn draw_zen_progress(frame: &mut Frame, app: &mut App) {
 
     let progress_area = Rect::new(x, y, width, 1);
     let text = Paragraph::new(label)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(app.theme.text));
 
     frame.render_widget(text, progress_area);
 }
@@ -327,10 +349,10 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
-    let key_style = Style::default().fg(Color::Yellow);
-    let label_style = Style::default().fg(Color::White);
-    let dim_style = Style::default().fg(Color::DarkGray);
-    let section_style = Style::default().fg(Color::Cyan);
+    let key_style = Style::default().fg(app.theme.accent);
+    let label_style = Style::default().fg(app.theme.text);
+    let dim_style = Style::default().fg(app.theme.text_muted);
+    let section_style = Style::default().fg(app.theme.primary);
 
     // Helper to create a padded key-value line
     let help_line = |key: &str, desc: String| -> Line {
@@ -385,43 +407,20 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
         Span::styled("Quit", label_style),
     ]));
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Help ")
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(app.theme.border_active));
+    if let Some(bg) = app.theme.background_panel {
+        block = block.style(Style::default().bg(bg));
+    }
+
     let help_block = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Help ")
-                .title_alignment(Alignment::Center)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
+        .block(block)
         .alignment(Alignment::Left);
 
     frame.render_widget(help_block, popup_area);
-}
-
-/// Get the animation color modifier based on current animation state
-#[allow(dead_code)]
-pub fn get_animation_style(app: &App, is_old_content: bool) -> Style {
-    match app.animation_phase {
-        AnimationPhase::Idle => Style::default(),
-        AnimationPhase::FadeOut => {
-            if is_old_content {
-                // Fading out old content
-                let intensity = ((1.0 - app.animation_progress) * 255.0) as u8;
-                Style::default().fg(Color::Rgb(intensity, intensity / 3, intensity / 3))
-            } else {
-                Style::default().fg(Color::DarkGray)
-            }
-        }
-        AnimationPhase::FadeIn => {
-            if !is_old_content {
-                // Fading in new content
-                let intensity = (app.animation_progress * 255.0) as u8;
-                Style::default().fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-            } else {
-                Style::default().fg(Color::DarkGray)
-            }
-        }
-    }
 }
 
 fn draw_path_popup(frame: &mut Frame, app: &App) {
@@ -446,15 +445,18 @@ fn draw_path_popup(frame: &mut Frame, app: &App) {
         file_path
     };
 
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(" File Path ")
+        .title_alignment(Alignment::Center)
+        .border_style(Style::default().fg(app.theme.border_active));
+    if let Some(bg) = app.theme.background_panel {
+        block = block.style(Style::default().bg(bg));
+    }
+
     let path_block = Paragraph::new(display_path)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" File Path ")
-                .title_alignment(Alignment::Center)
-                .border_style(Style::default().fg(Color::Cyan)),
-        )
-        .style(Style::default().fg(Color::White))
+        .block(block)
+        .style(Style::default().fg(app.theme.text))
         .alignment(Alignment::Center);
 
     frame.render_widget(path_block, popup_area);

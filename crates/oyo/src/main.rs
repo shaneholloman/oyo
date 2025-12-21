@@ -1,6 +1,7 @@
 //! Oyo CLI - Step-through diff viewer TUI
 
 mod app;
+mod color;
 mod config;
 mod ui;
 mod views;
@@ -39,6 +40,16 @@ struct Args {
     /// Auto-play through all changes
     #[arg(long)]
     autoplay: bool,
+
+    /// Theme mode: dark or light
+    #[arg(long, value_enum)]
+    theme_mode: Option<CliThemeMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CliThemeMode {
+    Dark,
+    Light,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -261,6 +272,14 @@ fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| "▐".to_string());
 
+    // Compute theme mode: CLI overrides config, default to dark
+    let light_mode = match args.theme_mode {
+        Some(CliThemeMode::Light) => true,
+        Some(CliThemeMode::Dark) => false,
+        None => config.ui.theme.is_light_mode(),
+    };
+    app.theme = config.ui.theme.resolve(light_mode);
+
     // Handle initial file enter (respects auto_step_blank_files and auto_step_on_enter)
     app.handle_file_enter();
 
@@ -285,7 +304,7 @@ fn main() -> Result<()> {
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
-    let tick_rate = Duration::from_millis(50);
+    let tick_rate = Duration::from_millis(16);
 
     loop {
         terminal.draw(|f| ui::draw(f, app))?;

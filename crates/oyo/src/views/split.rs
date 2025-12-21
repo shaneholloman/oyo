@@ -4,7 +4,7 @@ use super::render_empty_state;
 use crate::app::{AnimationPhase, App};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
@@ -76,9 +76,9 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Gutter marker: primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
-                (primary_marker.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                (primary_marker.as_str(), Style::default().fg(app.theme.primary).add_modifier(Modifier::BOLD))
             } else if view_line.show_hunk_extent {
-                (extent_marker.as_str(), Style::default().fg(Color::DarkGray))
+                (extent_marker.as_str(), Style::default().fg(app.theme.diff_ext_marker))
             } else {
                 (" ", Style::default())
             };
@@ -86,7 +86,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             // Build gutter line
             let gutter_spans = vec![
                 Span::styled(active_marker, active_style),
-                Span::styled(line_num_str, Style::default().fg(Color::DarkGray)),
+                Span::styled(line_num_str, Style::default().fg(app.theme.diff_line_number)),
                 Span::styled(" ", Style::default()),
             ];
             gutter_lines.push(Line::from(gutter_spans));
@@ -94,7 +94,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             // Build content line
             let mut content_spans: Vec<Span> = Vec::new();
             for view_span in &view_line.spans {
-                let style = get_old_span_style(view_span.kind, view_line.is_active, app);
+                let style = get_old_span_style(view_span.kind, view_line.kind, view_line.is_active, app);
                 // For deleted spans, don't strikethrough leading whitespace
                 if app.strikethrough_deletions
                     && matches!(
@@ -129,19 +129,25 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     // Clamp horizontal scroll
     app.clamp_horizontal_scroll(max_line_width, visible_width);
 
+    // Background style (if set)
+    let bg_style = app.theme.background.map(|bg| Style::default().bg(bg));
+
     // Render gutter (no horizontal scroll)
-    let gutter_paragraph = if app.line_wrap {
+    let mut gutter_paragraph = if app.line_wrap {
         Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
+    if let Some(style) = bg_style {
+        gutter_paragraph = gutter_paragraph.style(style);
+    }
     frame.render_widget(gutter_paragraph, gutter_area);
 
     // Render content with horizontal scroll (or empty state)
     if content_lines.is_empty() {
-        render_empty_state(frame, content_area);
+        render_empty_state(frame, content_area, &app.theme);
     } else {
-        let content_paragraph = if app.line_wrap {
+        let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
                 .scroll((app.scroll_offset as u16, 0))
@@ -149,13 +155,19 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(content_lines)
                 .scroll((0, app.horizontal_scroll as u16))
         };
+        if let Some(style) = bg_style {
+            content_paragraph = content_paragraph.style(style);
+        }
         frame.render_widget(content_paragraph, content_area);
     }
 
     // Render border
-    let border = Block::default()
+    let mut border = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(app.theme.border_subtle));
+    if let Some(style) = bg_style {
+        border = border.style(style);
+    }
     frame.render_widget(border, border_area);
 }
 
@@ -207,16 +219,16 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Gutter marker: right-pane primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
-                (primary_marker_right.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                (primary_marker_right.as_str(), Style::default().fg(app.theme.primary).add_modifier(Modifier::BOLD))
             } else if view_line.show_hunk_extent {
-                (extent_marker_right.as_str(), Style::default().fg(Color::DarkGray))
+                (extent_marker_right.as_str(), Style::default().fg(app.theme.diff_ext_marker))
             } else {
                 (" ", Style::default())
             };
 
             // Build gutter line
             let gutter_spans = vec![
-                Span::styled(line_num_str, Style::default().fg(Color::DarkGray)),
+                Span::styled(line_num_str, Style::default().fg(app.theme.diff_line_number)),
                 Span::styled(" ", Style::default()),
             ];
             gutter_lines.push(Line::from(gutter_spans));
@@ -224,7 +236,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             // Build content line
             let mut content_spans: Vec<Span> = Vec::new();
             for view_span in &view_line.spans {
-                let style = get_new_span_style(view_span.kind, view_line.is_active, app);
+                let style = get_new_span_style(view_span.kind, view_line.kind, view_line.is_active, app);
                 content_spans.push(Span::styled(view_span.text.clone(), style));
             }
             content_lines.push(Line::from(content_spans));
@@ -236,19 +248,25 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
+    // Background style (if set)
+    let bg_style = app.theme.background.map(|bg| Style::default().bg(bg));
+
     // Render gutter (no horizontal scroll)
-    let gutter_paragraph = if app.line_wrap {
+    let mut gutter_paragraph = if app.line_wrap {
         Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
+    if let Some(style) = bg_style {
+        gutter_paragraph = gutter_paragraph.style(style);
+    }
     frame.render_widget(gutter_paragraph, gutter_area);
 
     // Render content with horizontal scroll (or empty state)
     if content_lines.is_empty() {
-        render_empty_state(frame, content_area);
+        render_empty_state(frame, content_area, &app.theme);
     } else {
-        let content_paragraph = if app.line_wrap {
+        let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
                 .scroll((app.scroll_offset as u16, 0))
@@ -256,23 +274,51 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(content_lines)
                 .scroll((0, app.horizontal_scroll as u16))
         };
+        if let Some(style) = bg_style {
+            content_paragraph = content_paragraph.style(style);
+        }
         frame.render_widget(content_paragraph, content_area);
     }
 
     // Render marker (no horizontal scroll)
-    let marker_paragraph = if app.line_wrap {
+    let mut marker_paragraph = if app.line_wrap {
         Paragraph::new(marker_lines).scroll((app.scroll_offset as u16, 0))
     } else {
         Paragraph::new(marker_lines)
     };
+    if let Some(style) = bg_style {
+        marker_paragraph = marker_paragraph.style(style);
+    }
     frame.render_widget(marker_paragraph, marker_area);
 }
 
-fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
+fn get_old_span_style(kind: ViewSpanKind, line_kind: LineKind, is_active: bool, app: &App) -> Style {
+    let theme = &app.theme;
+    let is_modification = matches!(line_kind, LineKind::Modified | LineKind::PendingModify);
     match kind {
-        ViewSpanKind::Equal => Style::default().fg(Color::White),
+        ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Deleted => {
-            let mut style = Style::default().fg(Color::Red);
+            if is_modification {
+                if is_active {
+                    return super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    );
+                }
+                return Style::default().fg(theme.modify_base());
+            }
+            // Completed deletion: base color with optional strikethrough
+            let mut style = super::delete_style(
+                AnimationPhase::Idle,
+                0.0,
+                false,
+                false,
+                theme.delete_base(),
+                theme.diff_context,
+            );
             if app.strikethrough_deletions {
                 style = style.add_modifier(Modifier::CROSSED_OUT);
             }
@@ -280,63 +326,40 @@ fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
         }
         ViewSpanKind::Inserted => {
             // In old pane, inserted content shouldn't appear
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted)
         }
         ViewSpanKind::PendingDelete => {
-            if is_active {
-                if app.is_backward_animation() {
-                    // Backward: restore from red to white
-                    match app.animation_phase {
-                        AnimationPhase::FadeOut => {
-                            let progress = app.animation_progress;
-                            let g = (progress * 0.5 * 255.0) as u8;
-                            let b = (progress * 0.5 * 255.0) as u8;
-                            let mut style = Style::default().fg(Color::Rgb(255, g, b));
-                            if progress < 0.7 && app.strikethrough_deletions {
-                                style = style.add_modifier(Modifier::CROSSED_OUT);
-                            }
-                            style
-                        }
-                        AnimationPhase::FadeIn => {
-                            let progress = app.animation_progress;
-                            let g = ((0.5 + progress * 0.5) * 255.0) as u8;
-                            let b = ((0.5 + progress * 0.5) * 255.0) as u8;
-                            Style::default().fg(Color::Rgb(255, g, b))
-                        }
-                        AnimationPhase::Idle => Style::default().fg(Color::White),
-                    }
-                } else {
-                    // Forward: transition from white to red
-                    match app.animation_phase {
-                        AnimationPhase::FadeOut => {
-                            let progress = app.animation_progress;
-                            let r = 255;
-                            let g = ((1.0 - progress * 0.5) * 255.0) as u8;
-                            let b = ((1.0 - progress * 0.5) * 255.0) as u8;
-                            Style::default().fg(Color::Rgb(r, g, b))
-                        }
-                        AnimationPhase::FadeIn => {
-                            let progress = app.animation_progress;
-                            let r = 255;
-                            let g = ((0.5 - progress * 0.5) * 255.0) as u8;
-                            let b = ((0.5 - progress * 0.5) * 255.0) as u8;
-                            let mut style = Style::default().fg(Color::Rgb(r, g, b));
-                            if progress > 0.3 && app.strikethrough_deletions {
-                                style = style.add_modifier(Modifier::CROSSED_OUT);
-                            }
-                            style
-                        }
-                        AnimationPhase::Idle => {
-                            let mut style = Style::default().fg(Color::Red);
-                            if app.strikethrough_deletions {
-                                style = style.add_modifier(Modifier::CROSSED_OUT);
-                            }
-                            style
-                        }
-                    }
+            if is_modification {
+                if is_active {
+                    return super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    );
                 }
+                return Style::default().fg(theme.modify_dim());
+            }
+            if is_active {
+                super::delete_style(
+                    app.animation_phase,
+                    app.animation_progress,
+                    app.is_backward_animation(),
+                    app.strikethrough_deletions,
+                    theme.delete_base(),
+                    theme.diff_context,
+                )
             } else {
-                let mut style = Style::default().fg(Color::Red);
+                // Non-active pending delete: show as completed
+                let mut style = super::delete_style(
+                    AnimationPhase::Idle,
+                    0.0,
+                    false,
+                    false,
+                    theme.delete_base(),
+                    theme.diff_context,
+                );
                 if app.strikethrough_deletions {
                     style = style.add_modifier(Modifier::CROSSED_OUT);
                 }
@@ -344,69 +367,70 @@ fn get_old_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
             }
         }
         ViewSpanKind::PendingInsert => {
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            Style::default().fg(theme.text_muted).add_modifier(Modifier::DIM)
         }
     }
 }
 
-fn get_new_span_style(kind: ViewSpanKind, is_active: bool, app: &App) -> Style {
+fn get_new_span_style(kind: ViewSpanKind, line_kind: LineKind, is_active: bool, app: &App) -> Style {
+    let theme = &app.theme;
+    let is_modification = matches!(line_kind, LineKind::Modified | LineKind::PendingModify);
     match kind {
-        ViewSpanKind::Equal => Style::default().fg(Color::White),
+        ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Inserted => {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            if is_modification {
+                if is_active {
+                    return super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    );
+                }
+                return Style::default().fg(theme.modify_base());
+            }
+            // Completed insertion: base color
+            super::insert_style(
+                AnimationPhase::Idle,
+                0.0,
+                false,
+                theme.insert_base(),
+                theme.diff_context,
+            )
         }
         ViewSpanKind::Deleted => {
             // In new pane, deleted content shouldn't appear
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted)
         }
         ViewSpanKind::PendingInsert => {
-            if is_active {
-                if app.is_backward_animation() {
-                    // Backward: fade out (line will disappear)
-                    match app.animation_phase {
-                        AnimationPhase::FadeOut => {
-                            let progress = app.animation_progress;
-                            let intensity = ((1.0 - progress * 0.5) * 200.0) as u8 + 55;
-                            Style::default()
-                                .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                                .add_modifier(Modifier::BOLD)
-                        }
-                        AnimationPhase::FadeIn => {
-                            let progress = app.animation_progress;
-                            let intensity = ((0.5 - progress * 0.5) * 200.0) as u8 + 30;
-                            Style::default()
-                                .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                                .add_modifier(Modifier::DIM)
-                        }
-                        AnimationPhase::Idle => {
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-                        }
-                    }
-                } else {
-                    // Forward: fade in (line appears)
-                    match app.animation_phase {
-                        AnimationPhase::FadeOut => {
-                            Style::default()
-                                .fg(Color::Rgb(30, 60, 30))
-                                .add_modifier(Modifier::DIM)
-                        }
-                        AnimationPhase::FadeIn => {
-                            let intensity = (app.animation_progress * 200.0) as u8 + 55;
-                            Style::default()
-                                .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                                .add_modifier(Modifier::BOLD)
-                        }
-                        AnimationPhase::Idle => {
-                            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                        }
-                    }
+            if is_modification {
+                if is_active {
+                    return super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    );
                 }
+                return Style::default().fg(theme.modify_dim());
+            }
+            if is_active {
+                super::insert_style(
+                    app.animation_phase,
+                    app.animation_progress,
+                    app.is_backward_animation(),
+                    theme.insert_base(),
+                    theme.diff_context,
+                )
             } else {
-                Style::default().fg(Color::Green).add_modifier(Modifier::DIM)
+                // Non-active pending insert: show dim
+                Style::default().fg(theme.insert_dim())
             }
         }
         ViewSpanKind::PendingDelete => {
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
+            Style::default().fg(theme.delete_dim())
         }
     }
 }

@@ -80,37 +80,41 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // In evolution mode, use subtle line number coloring based on type
         let line_num_style = match view_line.kind {
-            LineKind::Context => Style::default().fg(Color::DarkGray),
-            LineKind::Inserted | LineKind::PendingInsert => Style::default().fg(Color::Green),
-            LineKind::Modified | LineKind::PendingModify => Style::default().fg(Color::Yellow),
+            LineKind::Context => Style::default().fg(app.theme.diff_line_number),
+            LineKind::Inserted | LineKind::PendingInsert => {
+                // Use insert gradient base color for line numbers
+                let rgb = crate::color::gradient_color(&app.theme.insert, 0.5);
+                Style::default().fg(Color::Rgb(rgb.r, rgb.g, rgb.b))
+            }
+            LineKind::Modified | LineKind::PendingModify => {
+                // Use modify gradient base color for line numbers
+                let rgb = crate::color::gradient_color(&app.theme.modify, 0.5);
+                Style::default().fg(Color::Rgb(rgb.r, rgb.g, rgb.b))
+            }
             LineKind::PendingDelete => {
                 // Fade the line number too during animation
                 if view_line.is_active && app.animation_phase != AnimationPhase::Idle {
-                    match app.animation_phase {
-                        AnimationPhase::FadeOut => {
-                            let progress = app.animation_progress;
-                            let g = ((1.0 - progress * 0.5) * 255.0) as u8;
-                            Style::default().fg(Color::Rgb(255, g / 4, g / 4))
-                        }
-                        AnimationPhase::FadeIn => {
-                            let progress = app.animation_progress;
-                            let intensity = ((1.0 - progress) * 127.0) as u8;
-                            Style::default().fg(Color::Rgb(intensity, intensity / 8, intensity / 8))
-                        }
-                        AnimationPhase::Idle => Style::default().fg(Color::Red),
-                    }
+                    let t = crate::color::animation_t(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                    );
+                    let rgb = crate::color::gradient_color(&app.theme.delete, t);
+                    Style::default().fg(Color::Rgb(rgb.r, rgb.g, rgb.b))
                 } else {
-                    Style::default().fg(Color::Red)
+                    // Use delete gradient base color
+                    let rgb = crate::color::gradient_color(&app.theme.delete, 0.5);
+                    Style::default().fg(Color::Rgb(rgb.r, rgb.g, rgb.b))
                 }
             }
-            LineKind::Deleted => Style::default().fg(Color::DarkGray),
+            LineKind::Deleted => Style::default().fg(app.theme.text_muted),
         };
 
         // Gutter marker: primary marker for focus, extent marker for hunk nav, blank otherwise
         let (active_marker, active_style) = if view_line.is_primary_active {
-            (primary_marker.as_str(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            (primary_marker.as_str(), Style::default().fg(app.theme.primary).add_modifier(Modifier::BOLD))
         } else if view_line.show_hunk_extent {
-            (extent_marker.as_str(), Style::default().fg(Color::DarkGray))
+            (extent_marker.as_str(), Style::default().fg(app.theme.diff_ext_marker))
         } else {
             (" ", Style::default())
         };
@@ -162,19 +166,25 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
     // Clamp horizontal scroll
     app.clamp_horizontal_scroll(max_line_width, visible_width);
 
+    // Background style (if set)
+    let bg_style = app.theme.background.map(|bg| Style::default().bg(bg));
+
     // Render gutter (no horizontal scroll)
-    let gutter_paragraph = if app.line_wrap {
+    let mut gutter_paragraph = if app.line_wrap {
         Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
+    if let Some(style) = bg_style {
+        gutter_paragraph = gutter_paragraph.style(style);
+    }
     frame.render_widget(gutter_paragraph, gutter_area);
 
     // Render content with horizontal scroll (or empty state)
     if content_lines.is_empty() {
-        render_empty_state(frame, content_area);
+        render_empty_state(frame, content_area, &app.theme);
     } else {
-        let content_paragraph = if app.line_wrap {
+        let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
                 .scroll((app.scroll_offset as u16, 0))
@@ -182,6 +192,9 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(content_lines)
                 .scroll((0, app.horizontal_scroll as u16))
         };
+        if let Some(style) = bg_style {
+            content_paragraph = content_paragraph.style(style);
+        }
         frame.render_widget(content_paragraph, content_area);
 
         // Render scrollbar (if enabled)
@@ -196,216 +209,106 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
                 .filter(|l| !matches!(l.kind, LineKind::Deleted | LineKind::PendingDelete))
                 .count();
 
-            let mut scrollbar_state =
-                ScrollbarState::new(total_displayable).position(app.scroll_offset);
+            let visible_lines = content_area.height as usize;
+            if total_displayable > visible_lines {
+                let mut scrollbar_state =
+                    ScrollbarState::new(total_displayable).position(app.scroll_offset);
 
-            frame.render_stateful_widget(
-                scrollbar,
-                area.inner(ratatui::layout::Margin {
-                    vertical: 1,
-                    horizontal: 0,
-                }),
-                &mut scrollbar_state,
-            );
+                frame.render_stateful_widget(
+                    scrollbar,
+                    area.inner(ratatui::layout::Margin {
+                        vertical: 1,
+                        horizontal: 0,
+                    }),
+                    &mut scrollbar_state,
+                );
+            }
         }
     }
 }
 
 fn get_evolution_span_style(span_kind: ViewSpanKind, line_kind: LineKind, is_active: bool, app: &App) -> Style {
-    // Check if this is a modification line - use yellow instead of green
+    let theme = &app.theme;
+    // Check if this is a modification line - use modify gradient instead of insert
     let is_modification = matches!(line_kind, LineKind::Modified | LineKind::PendingModify);
 
     match span_kind {
-        ViewSpanKind::Equal => Style::default().fg(Color::White),
+        ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Inserted => {
             if is_modification {
-                // Modified content shows as yellow
-                if is_active {
-                    get_modify_animation_style(app)
-                } else {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                }
+                // Modified content: use modify gradient
+                super::modify_style(
+                    AnimationPhase::Idle,
+                    0.0,
+                    false,
+                    theme.modify_base(),
+                    theme.diff_context,
+                )
             } else {
-                // Pure insertion shows as green
-                if is_active {
-                    get_insert_animation_style(app)
-                } else {
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD)
-                }
+                // Pure insertion: use insert colors
+                super::insert_style(
+                    AnimationPhase::Idle,
+                    0.0,
+                    false,
+                    theme.insert_base(),
+                    theme.diff_context,
+                )
             }
         }
         ViewSpanKind::Deleted => {
             // In evolution view, deleted content is hidden
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted)
         }
         ViewSpanKind::PendingInsert => {
             if is_modification {
                 if is_active {
-                    get_pending_modify_style(app)
+                    super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    )
                 } else {
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)
+                    Style::default().fg(theme.modify_dim())
                 }
             } else {
                 if is_active {
-                    get_pending_insert_style(app)
+                    super::insert_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.insert_base(),
+                        theme.diff_context,
+                    )
                 } else {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::DIM)
+                    Style::default().fg(theme.insert_dim())
                 }
             }
         }
         ViewSpanKind::PendingDelete => {
-            // Show fading out during animation
             if is_active {
-                get_pending_delete_style(app)
+                if is_modification {
+                    super::modify_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        theme.modify_base(),
+                        theme.diff_context,
+                    )
+                } else {
+                    super::delete_style(
+                        app.animation_phase,
+                        app.animation_progress,
+                        app.is_backward_animation(),
+                        app.strikethrough_deletions,
+                        theme.delete_base(),
+                        theme.diff_context,
+                    )
+                }
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.text_muted)
             }
         }
-    }
-}
-
-fn get_insert_animation_style(app: &App) -> Style {
-    match app.animation_phase {
-        AnimationPhase::FadeOut => Style::default()
-            .fg(Color::Rgb(30, 80, 30))
-            .add_modifier(Modifier::DIM),
-        AnimationPhase::FadeIn => {
-            let intensity = (app.animation_progress * 200.0) as u8 + 55;
-            Style::default()
-                .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                .add_modifier(Modifier::BOLD)
-        }
-        AnimationPhase::Idle => Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    }
-}
-
-fn get_pending_delete_style(app: &App) -> Style {
-    if app.is_backward_animation() {
-        // Backward in evolution: line reappears (fade in from nothing)
-        match app.animation_phase {
-            AnimationPhase::FadeOut => {
-                // Start dim/dark
-                let progress = app.animation_progress;
-                let intensity = (progress * 0.5 * 255.0) as u8;
-                Style::default()
-                    .fg(Color::Rgb(intensity, intensity, intensity))
-                    .add_modifier(Modifier::DIM)
-            }
-            AnimationPhase::FadeIn => {
-                // Fade in to normal
-                let progress = app.animation_progress;
-                let intensity = ((0.5 + progress * 0.5) * 255.0) as u8;
-                Style::default().fg(Color::Rgb(intensity, intensity, intensity))
-            }
-            AnimationPhase::Idle => Style::default().fg(Color::White),
-        }
-    } else {
-        // Forward: line fades out and disappears
-        match app.animation_phase {
-            AnimationPhase::FadeOut => {
-                let progress = app.animation_progress;
-                let r = 255;
-                let gb = ((1.0 - progress * 0.5) * 255.0) as u8;
-                Style::default().fg(Color::Rgb(r, gb, gb))
-            }
-            AnimationPhase::FadeIn => {
-                let progress = app.animation_progress;
-                let intensity = ((1.0 - progress) * 0.5 + 0.0) * 255.0;
-                let r = (intensity * 2.0).min(255.0) as u8;
-                let g = (intensity * 0.2) as u8;
-                let b = (intensity * 0.2) as u8;
-
-                let mut style = Style::default().fg(Color::Rgb(r, g, b));
-                if progress > 0.2 && app.strikethrough_deletions {
-                    style = style.add_modifier(Modifier::CROSSED_OUT);
-                }
-                if progress > 0.5 {
-                    style = style.add_modifier(Modifier::DIM);
-                }
-                style
-            }
-            AnimationPhase::Idle => Style::default().fg(Color::DarkGray),
-        }
-    }
-}
-
-fn get_pending_insert_style(app: &App) -> Style {
-    if app.is_backward_animation() {
-        // Backward: fade out (line will disappear)
-        match app.animation_phase {
-            AnimationPhase::FadeOut => {
-                let progress = app.animation_progress;
-                let intensity = ((1.0 - progress * 0.5) * 200.0) as u8 + 55;
-                Style::default()
-                    .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                    .add_modifier(Modifier::BOLD)
-            }
-            AnimationPhase::FadeIn => {
-                let progress = app.animation_progress;
-                let intensity = ((0.5 - progress * 0.5) * 200.0) as u8 + 30;
-                Style::default()
-                    .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                    .add_modifier(Modifier::DIM)
-            }
-            AnimationPhase::Idle => Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        }
-    } else {
-        // Forward: fade in (line appears)
-        match app.animation_phase {
-            AnimationPhase::FadeOut => Style::default()
-                .fg(Color::Rgb(30, 60, 30))
-                .add_modifier(Modifier::DIM),
-            AnimationPhase::FadeIn => {
-                let intensity = (app.animation_progress * 200.0) as u8 + 55;
-                Style::default()
-                    .fg(Color::Rgb(intensity / 3, intensity, intensity / 3))
-                    .add_modifier(Modifier::BOLD)
-            }
-            AnimationPhase::Idle => Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        }
-    }
-}
-
-fn get_modify_animation_style(app: &App) -> Style {
-    match app.animation_phase {
-        AnimationPhase::FadeOut => Style::default()
-            .fg(Color::Rgb(80, 80, 30))
-            .add_modifier(Modifier::DIM),
-        AnimationPhase::FadeIn => {
-            let intensity = (app.animation_progress * 200.0) as u8 + 55;
-            Style::default()
-                .fg(Color::Rgb(intensity, intensity, intensity / 3))
-                .add_modifier(Modifier::BOLD)
-        }
-        AnimationPhase::Idle => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    }
-}
-
-fn get_pending_modify_style(app: &App) -> Style {
-    match app.animation_phase {
-        AnimationPhase::FadeOut => Style::default()
-            .fg(Color::Rgb(60, 60, 30))
-            .add_modifier(Modifier::DIM),
-        AnimationPhase::FadeIn => {
-            let intensity = (app.animation_progress * 200.0) as u8 + 55;
-            Style::default()
-                .fg(Color::Rgb(intensity, intensity, intensity / 3))
-                .add_modifier(Modifier::BOLD)
-        }
-        AnimationPhase::Idle => Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
     }
 }

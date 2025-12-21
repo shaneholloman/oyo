@@ -16,6 +16,16 @@
 //! extent_marker = "▌"
 //! extent_marker_right = "▐"
 //!
+//! [ui.theme.defs]
+//! oyo14 = "#A3BE8C"
+//! oyo11 = "#BF616A"
+//!
+//! [ui.theme.theme.diffAdded]
+//! dark = "oyo14"
+//!
+//! [ui.theme.theme.diffRemoved]
+//! dark = "oyo11"
+//!
 //! [playback]
 //! speed = 200
 //! autoplay = false
@@ -27,8 +37,234 @@
 //! panel_visible = true
 //! ```
 
+use crate::color::{self, AnimationGradient};
+use ratatui::style::Color;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+// ============================================================================
+// Theme Configuration
+// ============================================================================
+
+/// Dark/light color pair for a theme token
+#[derive(Debug, Clone, Deserialize)]
+pub struct DarkLight {
+    pub dark: String,
+    #[serde(default)]
+    #[allow(dead_code)] // Reserved for future light theme support
+    pub light: Option<String>,
+}
+
+/// Theme tokens (opencode schema)
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ThemeTokens {
+    pub text: Option<DarkLight>,
+    pub text_muted: Option<DarkLight>,
+    pub primary: Option<DarkLight>,
+    pub secondary: Option<DarkLight>,
+    pub accent: Option<DarkLight>,
+    pub error: Option<DarkLight>,
+    pub warning: Option<DarkLight>,
+    pub success: Option<DarkLight>,
+    pub info: Option<DarkLight>,
+    pub background: Option<DarkLight>,
+    pub background_panel: Option<DarkLight>,
+    pub background_element: Option<DarkLight>,
+    pub border: Option<DarkLight>,
+    pub border_active: Option<DarkLight>,
+    pub border_subtle: Option<DarkLight>,
+    pub diff_added: Option<DarkLight>,
+    pub diff_removed: Option<DarkLight>,
+    pub diff_context: Option<DarkLight>,
+    pub diff_line_number: Option<DarkLight>,
+    pub diff_ext_marker: Option<DarkLight>,
+}
+
+/// Theme configuration (defs + tokens)
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    /// Theme mode: "dark" or "light"
+    pub mode: Option<String>,
+    /// Named color definitions (e.g., green1 = "#A3BE8C")
+    pub defs: HashMap<String, String>,
+    /// Theme tokens with dark/light values
+    pub theme: ThemeTokens,
+}
+
+impl ThemeConfig {
+    /// Check if config specifies light mode
+    pub fn is_light_mode(&self) -> bool {
+        self.mode.as_ref().map(|m| m.eq_ignore_ascii_case("light")).unwrap_or(false)
+    }
+}
+
+/// Resolved theme — all ratatui Colors ready to use
+#[derive(Debug, Clone)]
+pub struct ResolvedTheme {
+    // Core UI
+    pub text: Color,
+    pub text_muted: Color,
+    pub primary: Color,
+    pub accent: Color,
+
+    // Status
+    pub error: Color,
+    pub warning: Color,
+    pub success: Color,
+    pub info: Color,
+
+    // Backgrounds (None = transparent)
+    pub background: Option<Color>,
+    pub background_panel: Option<Color>,
+    pub background_element: Option<Color>,
+
+    // Borders
+    pub border: Color,
+    pub border_active: Color,
+    pub border_subtle: Color,
+
+    // Diff
+    pub diff_context: Color,
+    pub diff_line_number: Color,
+    pub diff_ext_marker: Color,
+
+    // Animation gradients (derived from diff colors)
+    pub insert: AnimationGradient,
+    pub delete: AnimationGradient,
+    pub modify: AnimationGradient,
+}
+
+impl ResolvedTheme {
+    /// Get dimmed version of insert color for inactive spans
+    pub fn insert_dim(&self) -> Color {
+        color::dim_color_from_gradient(&self.insert)
+    }
+
+    /// Get base insert color (for animation start/end)
+    pub fn insert_base(&self) -> Color {
+        let rgb = color::hsl_to_rgb(self.insert.base);
+        Color::Rgb(rgb.r, rgb.g, rgb.b)
+    }
+
+    /// Get dimmed version of delete color for inactive spans
+    pub fn delete_dim(&self) -> Color {
+        color::dim_color_from_gradient(&self.delete)
+    }
+
+    /// Get base delete color (for animation start/end)
+    pub fn delete_base(&self) -> Color {
+        let rgb = color::hsl_to_rgb(self.delete.base);
+        Color::Rgb(rgb.r, rgb.g, rgb.b)
+    }
+
+    /// Get dimmed version of modify color for inactive spans
+    pub fn modify_dim(&self) -> Color {
+        color::dim_color_from_gradient(&self.modify)
+    }
+
+    /// Get base modify color (for animation start/end)
+    pub fn modify_base(&self) -> Color {
+        let rgb = color::hsl_to_rgb(self.modify.base);
+        Color::Rgb(rgb.r, rgb.g, rgb.b)
+    }
+
+    /// Get dimmed version of warning for autoplay flash
+    pub fn warning_dim(&self) -> Color {
+        color::dim_color(self.warning)
+    }
+}
+
+impl Default for ResolvedTheme {
+    fn default() -> Self {
+        ThemeConfig::default().resolve(false)
+    }
+}
+
+impl ThemeConfig {
+    /// Resolve theme config to concrete colors
+    /// If light_mode is true, prefers .light values, falls back to .dark
+    pub fn resolve(&self, light_mode: bool) -> ResolvedTheme {
+        let defs = &self.defs;
+        let tokens = &self.theme;
+
+        // Helper to resolve a token with fallback
+        // In light mode: try .light first, fall back to .dark
+        let resolve = |token: &Option<DarkLight>, fallback: Color| -> Color {
+            token
+                .as_ref()
+                .and_then(|dl| {
+                    if light_mode {
+                        // Try light first, fallback to dark
+                        dl.light.as_ref()
+                            .and_then(|v| color::resolve_color(v, defs))
+                            .or_else(|| color::resolve_color(&dl.dark, defs))
+                    } else {
+                        color::resolve_color(&dl.dark, defs)
+                    }
+                })
+                .unwrap_or(fallback)
+        };
+
+        // Helper for optional background colors (None = transparent)
+        let resolve_bg = |token: &Option<DarkLight>| -> Option<Color> {
+            token.as_ref().and_then(|dl| {
+                let value_str = if light_mode {
+                    dl.light.as_ref().unwrap_or(&dl.dark)
+                } else {
+                    &dl.dark
+                };
+                let value = value_str.trim().to_lowercase();
+                if value == "transparent" || value == "none" {
+                    None
+                } else {
+                    color::resolve_color(value_str, defs)
+                }
+            })
+        };
+
+        // Resolve diff colors first (needed for gradients)
+        let diff_added = resolve(&tokens.diff_added, Color::Green);
+        let diff_removed = resolve(&tokens.diff_removed, Color::Red);
+        let warning = resolve(&tokens.warning, Color::Yellow);
+
+        ResolvedTheme {
+            // Core UI - ANSI defaults for terminal palette compatibility
+            text: resolve(&tokens.text, Color::Reset),
+            text_muted: resolve(&tokens.text_muted, Color::DarkGray),
+            primary: resolve(&tokens.primary, Color::Cyan),
+            accent: resolve(&tokens.accent, Color::Cyan),
+
+            // Status
+            error: resolve(&tokens.error, Color::Red),
+            warning,
+            success: resolve(&tokens.success, Color::Green),
+            info: resolve(&tokens.info, Color::Blue),
+
+            // Backgrounds - transparent by default
+            background: resolve_bg(&tokens.background),
+            background_panel: resolve_bg(&tokens.background_panel),
+            background_element: resolve_bg(&tokens.background_element),
+
+            // Borders
+            border: resolve(&tokens.border, Color::DarkGray),
+            border_active: resolve(&tokens.border_active, Color::Gray),
+            border_subtle: resolve(&tokens.border_subtle, Color::DarkGray),
+
+            // Diff
+            diff_context: resolve(&tokens.diff_context, Color::Reset),
+            diff_line_number: resolve(&tokens.diff_line_number, Color::DarkGray),
+            diff_ext_marker: resolve(&tokens.diff_ext_marker, Color::DarkGray),
+
+            // Animation gradients derived from diff colors
+            insert: color::gradient_from_color(diff_added),
+            delete: color::gradient_from_color(diff_removed),
+            modify: color::gradient_from_color(warning),
+        }
+    }
+}
 
 /// UI configuration
 #[derive(Debug, Deserialize)]
@@ -54,6 +290,8 @@ pub struct UiConfig {
     pub extent_marker: String,
     /// Marker for right pane extent lines (defaults to ▐)
     pub extent_marker_right: Option<String>,
+    /// Theme configuration
+    pub theme: ThemeConfig,
 }
 
 impl Default for UiConfig {
@@ -69,6 +307,7 @@ impl Default for UiConfig {
             primary_marker_right: None,
             extent_marker: "▌".to_string(),
             extent_marker_right: None,
+            theme: ThemeConfig::default(),
         }
     }
 }
