@@ -158,6 +158,10 @@ pub struct App {
     syntax_engine: Option<SyntaxEngine>,
     /// Per-file syntax cache (old/new spans)
     syntax_caches: Vec<Option<SyntaxCache>>,
+    /// Show syntax scope debug label in the status bar
+    show_syntax_scopes: bool,
+    /// Cached syntax scope label for the active line
+    syntax_scope_cache: Option<SyntaxScopeCache>,
     /// Peek old/new state (stepping-only)
     peek_state: Option<PeekState>,
     /// Search query (diff pane)
@@ -172,6 +176,8 @@ pub struct App {
     search_target: Option<usize>,
     /// Cached search regex (case-insensitive)
     search_regex: Option<Regex>,
+    /// Last known viewport height for the diff area
+    pub last_viewport_height: usize,
 }
 
 /// Pure helper: determine if overscroll should be allowed
@@ -198,6 +204,14 @@ pub enum PeekScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeekState {
     pub scope: PeekScope,
+}
+
+#[derive(Debug, Clone)]
+struct SyntaxScopeCache {
+    file_index: usize,
+    side: SyntaxSide,
+    line_num: usize,
+    label: String,
 }
 
 impl App {
@@ -257,6 +271,8 @@ impl App {
             syntax_mode: SyntaxMode::Auto,
             syntax_engine: None,
             syntax_caches: vec![None; file_count],
+            show_syntax_scopes: false,
+            syntax_scope_cache: None,
             peek_state: None,
             search_query: String::new(),
             search_active: false,
@@ -264,6 +280,7 @@ impl App {
             needs_scroll_to_search: false,
             search_target: None,
             search_regex: None,
+            last_viewport_height: 0,
         }
     }
 
@@ -303,6 +320,11 @@ impl App {
             self.syntax_engine = None;
             self.syntax_caches = vec![None; self.multi_diff.file_count()];
         }
+    }
+
+    pub fn toggle_syntax_scopes(&mut self) {
+        self.show_syntax_scopes = !self.show_syntax_scopes;
+        self.syntax_scope_cache = None;
     }
 
     pub fn toggle_peek_old_change(&mut self) {
@@ -685,8 +707,59 @@ impl App {
             spans
                 .iter()
                 .map(|span| Span::styled(span.text.clone(), span.style))
-                .collect(),
+            .collect(),
         )
+    }
+
+    pub fn syntax_scope_target(&mut self, view: &[ViewLine]) -> Option<(usize, String)> {
+        if !self.show_syntax_scopes {
+            return None;
+        }
+        let step_direction = self.multi_diff.current_step_direction();
+        let (display_len, _) = display_metrics(
+            view,
+            self.view_mode,
+            self.animation_phase,
+            self.scroll_offset,
+            step_direction,
+        );
+        if display_len == 0 {
+            return None;
+        }
+        let viewport_height = self.last_viewport_height.max(1);
+        let target_idx = self.scroll_offset.saturating_add(viewport_height / 2);
+        let display_idx = target_idx.min(display_len.saturating_sub(1));
+
+        let (side, line_num) = self.syntax_line_for_display(view, display_idx)?;
+        let file_index = self.multi_diff.selected_index;
+        if let Some(cache) = &self.syntax_scope_cache {
+            if cache.file_index == file_index && cache.side == side && cache.line_num == line_num {
+                return Some((display_idx, cache.label.clone()));
+            }
+        }
+        let file_name = self.current_file_path();
+        let nav = self.multi_diff.current_navigator();
+        let content = match side {
+            SyntaxSide::Old => nav.old_content(),
+            SyntaxSide::New => nav.new_content(),
+        };
+        if self.syntax_engine.is_none() {
+            self.syntax_engine = Some(SyntaxEngine::new(&self.theme));
+        }
+        let engine = self.syntax_engine.as_ref()?;
+        let scopes = engine.scopes_for_line(content, &file_name, line_num - 1);
+        let label = if scopes.is_empty() {
+            "scopes: (none)".to_string()
+        } else {
+            format!("scopes: {}", scopes.join(" | "))
+        };
+        self.syntax_scope_cache = Some(SyntaxScopeCache {
+            file_index,
+            side,
+            line_num,
+            label: label.clone(),
+        });
+        Some((display_idx, label))
     }
 
     fn ensure_syntax_cache(&mut self) -> Option<&SyntaxCache> {
@@ -715,6 +788,80 @@ impl App {
             ));
         }
         self.syntax_caches[idx].as_ref()
+    }
+
+    fn syntax_line_for_display(
+        &self,
+        view: &[ViewLine],
+        display_idx: usize,
+    ) -> Option<(SyntaxSide, usize)> {
+        match self.view_mode {
+            ViewMode::SinglePane => view
+                .get(display_idx)
+                .and_then(|line| line.new_line.or(line.old_line).map(|line_num| {
+                    let side = if line.new_line.is_some() {
+                        SyntaxSide::New
+                    } else {
+                        SyntaxSide::Old
+                    };
+                    (side, line_num)
+                })),
+            ViewMode::Evolution => {
+                let mut display_count = 0usize;
+                for line in view {
+                    let visible = match line.kind {
+                        LineKind::Deleted => false,
+                        LineKind::PendingDelete => {
+                            line.is_active && self.animation_phase != AnimationPhase::Idle
+                        }
+                        _ => true,
+                    };
+                    if visible {
+                        if display_count == display_idx {
+                            let line_num = line.new_line.or(line.old_line)?;
+                            let side = if line.new_line.is_some() {
+                                SyntaxSide::New
+                            } else {
+                                SyntaxSide::Old
+                            };
+                            return Some((side, line_num));
+                        }
+                        display_count += 1;
+                    }
+                }
+                None
+            }
+            ViewMode::Split => {
+                let mut old_count = 0usize;
+                let mut new_count = 0usize;
+                let mut old_line = None;
+                let mut new_line = None;
+
+                for line in view {
+                    if line.old_line.is_some() {
+                        if old_count == display_idx {
+                            old_line = line.old_line;
+                        }
+                        old_count += 1;
+                    }
+                    if line.new_line.is_some() {
+                        if new_count == display_idx {
+                            new_line = line.new_line;
+                        }
+                        new_count += 1;
+                    }
+                    if new_line.is_some() || (old_count > display_idx && new_count > display_idx) {
+                        break;
+                    }
+                }
+
+                if let Some(line_num) = new_line {
+                    Some((SyntaxSide::New, line_num))
+                } else {
+                    old_line.map(|line_num| (SyntaxSide::Old, line_num))
+                }
+            }
+        }
     }
 
     pub fn next_step(&mut self) {

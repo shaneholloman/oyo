@@ -2,7 +2,7 @@
 name = "oyo"
 version.workspace = true
 edition.workspace = true
-description = "CLI TUI for oyo - step-through diff viewer"
+description = "CLI TUI for oyo - Step-through diff viewer"
 license.workspace = true
 
 [[bin]]

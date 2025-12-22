@@ -144,6 +144,7 @@ scrollbar = false           # Show scrollbar (default: false)
 strikethrough_deletions = false # Show strikethrough on deleted text
 stepping = true             # Enable stepping (false = no-step mode)
 syntax = "auto"             # "auto" (no-step only), "on", or "off"
+# theme = { name = "tokyonight" } # Built-ins listed below
 # Optional syntax tokens (fallbacks apply if omitted):
 # syntaxPlain, syntaxKeyword, syntaxString, syntaxNumber, syntaxComment,
 # syntaxType, syntaxFunction, syntaxVariable, syntaxConstant,
@@ -173,6 +174,45 @@ Config is loaded from (in priority order):
 1. `$XDG_CONFIG_HOME/oyo/config.toml`
 2. `~/.config/oyo/config.toml`
 3. Platform-specific (e.g., `~/Library/Application Support/oyo/config.toml` on macOS)
+
+## Themes
+
+Pick a built-in theme:
+
+```toml
+[ui]
+theme = { name = "tokyonight" }
+```
+
+Built-in themes:
+`aura`, `ayu`, `catppuccin`, `catppuccin-frappe`, `catppuccin-macchiato`, `cobalt2`,
+`cursor`, `dracula`, `everforest`, `flexoki`, `github`, `gruvbox`, `kanagawa`,
+`lucent-orng`, `material`, `matrix`, `mercury`, `monokai`, `nightowl`, `nord`,
+`one-dark`, `opencode`, `orng`, `palenight`, `rosepine`, `solarized`, `synthwave84`,
+`tokyonight`, `vercel`, `vesper`, `zenburn`.
+
+Customize or create a theme by defining color tokens in config:
+
+```toml
+[ui.theme.defs]
+accent = "#ff966c"
+bg = "#1a1b26"
+
+[ui.theme.theme]
+background = { dark = "bg" }
+accent = { dark = "accent" }
+syntaxKeyword = { dark = "#c099ff" }
+```
+
+Supported tokens:
+`text`, `textMuted`, `primary`, `secondary`, `accent`, `error`, `warning`, `success`, `info`,
+`background`, `backgroundPanel`, `backgroundElement`, `border`, `borderActive`, `borderSubtle`,
+`diffAdded`, `diffRemoved`, `diffContext`, `diffLineNumber`, `diffExtMarker`,
+`syntaxPlain`, `syntaxKeyword`, `syntaxString`, `syntaxNumber`, `syntaxComment`, `syntaxAttribute`,
+`syntaxType`, `syntaxFunction`, `syntaxVariable`, `syntaxConstant`, `syntaxBuiltin`,
+`syntaxMacro`, `syntaxOperator`, `syntaxPunctuation`.
+
+You can also use `crates/oyo/themes/schema.json` as a reference when creating a theme file.
 
 ## How It Works
 

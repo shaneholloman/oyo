@@ -18,6 +18,14 @@ pub(crate) fn spans_to_text(spans: &[Span]) -> String {
     out
 }
 
+pub(crate) fn truncate_text(text: &str, max_width: usize) -> String {
+    if max_width == 0 || text.len() <= max_width {
+        return text.to_string();
+    }
+    let suffix_len = max_width.saturating_sub(3);
+    format!("{}...", &text[..suffix_len])
+}
+
 use crate::app::AnimationPhase;
 use crate::color;
 use crate::config::ResolvedTheme;

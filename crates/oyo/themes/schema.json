@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oyo.dev/theme.schema.json",
+  "title": "oyo theme",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "defs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "$ref": "#/$defs/darkLight" },
+        "textMuted": { "$ref": "#/$defs/darkLight" },
+        "primary": { "$ref": "#/$defs/darkLight" },
+        "secondary": { "$ref": "#/$defs/darkLight" },
+        "accent": { "$ref": "#/$defs/darkLight" },
+        "error": { "$ref": "#/$defs/darkLight" },
+        "warning": { "$ref": "#/$defs/darkLight" },
+        "success": { "$ref": "#/$defs/darkLight" },
+        "info": { "$ref": "#/$defs/darkLight" },
+        "syntaxPlain": { "$ref": "#/$defs/darkLight" },
+        "syntaxKeyword": { "$ref": "#/$defs/darkLight" },
+        "syntaxString": { "$ref": "#/$defs/darkLight" },
+        "syntaxNumber": { "$ref": "#/$defs/darkLight" },
+        "syntaxComment": { "$ref": "#/$defs/darkLight" },
+        "syntaxAttribute": { "$ref": "#/$defs/darkLight" },
+        "syntaxType": { "$ref": "#/$defs/darkLight" },
+        "syntaxFunction": { "$ref": "#/$defs/darkLight" },
+        "syntaxVariable": { "$ref": "#/$defs/darkLight" },
+        "syntaxConstant": { "$ref": "#/$defs/darkLight" },
+        "syntaxBuiltin": { "$ref": "#/$defs/darkLight" },
+        "syntaxMacro": { "$ref": "#/$defs/darkLight" },
+        "syntaxOperator": { "$ref": "#/$defs/darkLight" },
+        "syntaxPunctuation": { "$ref": "#/$defs/darkLight" },
+        "background": { "$ref": "#/$defs/darkLight" },
+        "backgroundPanel": { "$ref": "#/$defs/darkLight" },
+        "backgroundElement": { "$ref": "#/$defs/darkLight" },
+        "border": { "$ref": "#/$defs/darkLight" },
+        "borderActive": { "$ref": "#/$defs/darkLight" },
+        "borderSubtle": { "$ref": "#/$defs/darkLight" },
+        "diffAdded": { "$ref": "#/$defs/darkLight" },
+        "diffRemoved": { "$ref": "#/$defs/darkLight" },
+        "diffContext": { "$ref": "#/$defs/darkLight" },
+        "diffLineNumber": { "$ref": "#/$defs/darkLight" },
+        "diffExtMarker": { "$ref": "#/$defs/darkLight" }
+      },
+      "required": []
+    }
+  },
+  "required": ["theme"],
+  "$defs": {
+    "darkLight": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dark": { "type": "string" },
+        "light": { "type": "string" }
+      },
+      "required": ["dark"]
+    }
+  }
+}

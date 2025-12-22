@@ -1,7 +1,7 @@
 //! Evolution view - shows file morphing without deletion markers
 //! Deleted lines simply disappear, showing the file as it evolves
 
-use super::{render_empty_state, spans_to_text};
+use super::{render_empty_state, spans_to_text, truncate_text};
 use crate::app::{AnimationPhase, App};
 use crate::syntax::SyntaxSide;
 use ratatui::{
@@ -37,6 +37,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         step_direction,
     );
     app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
+    let debug_target = app.syntax_scope_target(&view_lines);
 
     // Split area into gutter (fixed) and content (scrollable)
     let chunks = Layout::default()
@@ -205,6 +206,15 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         max_line_width = max_line_width.max(line_width);
 
         content_lines.push(Line::from(content_spans));
+
+        if let Some((debug_idx, ref label)) = debug_target {
+            if debug_idx == display_idx {
+                let debug_text = truncate_text(&format!("  {}", label), visible_width);
+                let debug_style = Style::default().fg(app.theme.text_muted);
+                gutter_lines.push(Line::from(Span::raw(" ")));
+                content_lines.push(Line::from(Span::styled(debug_text, debug_style)));
+            }
+        }
     }
 
     // Clamp horizontal scroll

@@ -1,6 +1,6 @@
 //! Single pane view - morphs from old to new state
 
-use super::{render_empty_state, spans_to_text};
+use super::{render_empty_state, spans_to_text, truncate_text};
 use crate::app::App;
 use crate::color;
 use crate::syntax::SyntaxSide;
@@ -29,6 +29,7 @@ pub fn render_single_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let animation_frame = app.animation_frame();
     let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
     app.clamp_scroll(view_lines.len(), visible_height, app.allow_overscroll());
+    let debug_target = app.syntax_scope_target(&view_lines);
 
     // Split area into gutter (fixed) and content (scrollable)
     let chunks = Layout::default()
@@ -295,6 +296,15 @@ pub fn render_single_pane(frame: &mut Frame, app: &mut App, area: Rect) {
         max_line_width = max_line_width.max(line_width);
 
         content_lines.push(Line::from(content_spans));
+
+        if let Some((debug_idx, ref label)) = debug_target {
+            if debug_idx == idx {
+                let debug_text = truncate_text(&format!("  {}", label), visible_width);
+                let debug_style = Style::default().fg(app.theme.text_muted);
+                gutter_lines.push(Line::from(Span::raw(" ")));
+                content_lines.push(Line::from(Span::styled(debug_text, debug_style)));
+            }
+        }
     }
 
     // Clamp horizontal scroll

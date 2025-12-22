@@ -668,6 +668,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             // Toggle syntax highlighting mode
                             app.toggle_syntax();
                         }
+                        KeyCode::Char('T') => {
+                            app.reset_count();
+                            // Toggle syntax scope debug label
+                            app.toggle_syntax_scopes();
+                        }
                         KeyCode::Char('s') => {
                             app.reset_count();
                             // Toggle stepping state

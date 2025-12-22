@@ -1,6 +1,6 @@
 //! Split view with synchronized stepping
 
-use super::{render_empty_state, spans_to_text};
+use super::{render_empty_state, spans_to_text, truncate_text};
 use crate::app::{AnimationPhase, App};
 use crate::syntax::SyntaxSide;
 use ratatui::{
@@ -50,6 +50,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
     let visible_height = area.height as usize;
     let visible_width = area.width.saturating_sub(GUTTER_WIDTH + 1) as usize; // +1 for border
+    let debug_target = app.syntax_scope_target(&view_lines);
 
     // Split into gutter (fixed) and content (scrollable), plus border
     let chunks = Layout::default()
@@ -200,6 +201,13 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             content_lines.push(Line::from(content_spans));
             line_idx += 1;
+
+            if let Some((debug_idx, _)) = debug_target {
+                if debug_idx == display_idx {
+                    gutter_lines.push(Line::from(Span::raw(" ")));
+                    content_lines.push(Line::from(Span::raw("")));
+                }
+            }
         }
     }
 
@@ -257,6 +265,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let animation_frame = app.animation_frame();
     let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
     let visible_height = area.height as usize;
+    let debug_target = app.syntax_scope_target(&view_lines);
 
     // Split into gutter (fixed) and content (scrollable)
     let chunks = Layout::default()
@@ -271,6 +280,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let gutter_area = chunks[0];
     let content_area = chunks[1];
     let marker_area = chunks[2];
+    let visible_width = content_area.width as usize;
 
     let mut gutter_lines: Vec<Line> = Vec::new();
     let mut content_lines: Vec<Line> = Vec::new();
@@ -351,6 +361,16 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             marker_lines.push(Line::from(Span::styled(active_marker, active_style)));
 
             line_idx += 1;
+
+            if let Some((debug_idx, ref label)) = debug_target {
+                if debug_idx == display_idx {
+                    let debug_text = truncate_text(&format!("  {}", label), visible_width);
+                    let debug_style = Style::default().fg(app.theme.text_muted);
+                    gutter_lines.push(Line::from(Span::raw(" ")));
+                    content_lines.push(Line::from(Span::styled(debug_text, debug_style)));
+                    marker_lines.push(Line::from(Span::raw(" ")));
+                }
+            }
         }
     }
 

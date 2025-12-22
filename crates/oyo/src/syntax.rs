@@ -8,12 +8,13 @@ use syntect::{
         Color, FontStyle, Style as SynStyle, StyleModifier, Theme, ThemeItem, ThemeSettings,
         ScopeSelectors,
     },
-    parsing::{SyntaxReference, SyntaxSet},
+    parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet},
     util::LinesWithEndings,
 };
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyntaxSide {
     Old,
     New,
@@ -89,6 +90,31 @@ impl SyntaxEngine {
         out
     }
 
+    pub fn scopes_for_line(&self, content: &str, file_name: &str, line_index: usize) -> Vec<String> {
+        let syntax = self.syntax_for_file(file_name);
+        let mut state = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut scopes: BTreeSet<String> = BTreeSet::new();
+
+        for (idx, line) in LinesWithEndings::from(content).enumerate() {
+            let ops = state.parse_line(line, &self.syntax_set).unwrap_or_default();
+            if idx == line_index {
+                for (_, op) in ops {
+                    stack.apply(&op).ok();
+                    for scope in stack.scopes.iter() {
+                        scopes.insert(scope.to_string());
+                    }
+                }
+                break;
+            }
+            for (_, op) in ops {
+                stack.apply(&op).ok();
+            }
+        }
+
+        scopes.into_iter().collect()
+    }
+
     fn syntax_for_file(&self, file_name: &str) -> &SyntaxReference {
         self.syntax_set
             .find_syntax_for_file(file_name)
@@ -127,13 +153,47 @@ fn build_theme(theme: &ResolvedTheme) -> Theme {
         theme.syntax_comment,
     ));
     scopes.push(theme_item("string", theme.syntax_string));
-    scopes.push(theme_item("keyword", theme.syntax_keyword));
+    scopes.push(theme_item(
+        "keyword, keyword.declaration, keyword.control, keyword.other, storage.modifier",
+        theme.syntax_keyword,
+    ));
     scopes.push(theme_item("constant.numeric", theme.syntax_number));
-    scopes.push(theme_item("storage.type, entity.name.type", theme.syntax_type));
-    scopes.push(theme_item("entity.name.function", theme.syntax_function));
-    scopes.push(theme_item("variable, variable.parameter, variable.other", theme.syntax_variable));
-    scopes.push(theme_item("constant", theme.syntax_constant));
-    scopes.push(theme_item("keyword.operator", theme.syntax_operator));
+    scopes.push(theme_item(
+        "meta.annotation, meta.attribute, entity.other.attribute-name, variable.annotation",
+        theme.syntax_attribute,
+    ));
+    scopes.push(theme_item(
+        "meta.struct, meta.enum, meta.trait, meta.type, meta.generic",
+        theme.syntax_type,
+    ));
+    scopes.push(theme_item(
+        "storage.type, entity.name.type, entity.name.type.struct, entity.name.type.enum, entity.name.type.trait, entity.name.type.alias, entity.name.type.interface, entity.name.namespace, support.type, support.namespace",
+        theme.syntax_type,
+    ));
+    scopes.push(theme_item(
+        "entity.name.function, entity.name.function.method, support.function",
+        theme.syntax_function,
+    ));
+    scopes.push(theme_item(
+        "entity.name.function.macro, support.function.macro",
+        theme.syntax_macro,
+    ));
+    scopes.push(theme_item(
+        "variable, variable.parameter, variable.other, variable.other.member, variable.other.constant, variable.language",
+        theme.syntax_variable,
+    ));
+    scopes.push(theme_item(
+        "constant, constant.language, constant.character, constant.other",
+        theme.syntax_constant,
+    ));
+    scopes.push(theme_item(
+        "support.type.builtin, support.constant.builtin, support.function.builtin",
+        theme.syntax_builtin,
+    ));
+    scopes.push(theme_item(
+        "keyword.operator, keyword.operator.word, keyword.operator.symbol, operator",
+        theme.syntax_operator,
+    ));
     scopes.push(theme_item("punctuation", theme.syntax_punctuation));
 
     t.scopes = scopes;

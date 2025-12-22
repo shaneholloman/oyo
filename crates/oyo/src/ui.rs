@@ -244,6 +244,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_content(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.last_viewport_height = area.height as usize;
     // Auto-hide file panel if viewport is too narrow (need at least 50 cols for diff view)
     // But respect user's manual toggle preference
     let min_width_for_panel = 85; // 35 (panel) + 50 (diff view)
@@ -663,6 +664,7 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
         help_line("z", "Center on active".into()),
         help_line("w", "Toggle line wrap".into()),
         help_line("t", "Toggle syntax highlight".into()),
+        help_line("T", "Toggle syntax scopes".into()),
         help_line("s", "Toggle stepping".into()),
         help_line("S", "Toggle strikethrough".into()),
         Line::from(""),

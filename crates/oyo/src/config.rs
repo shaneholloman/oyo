@@ -74,10 +74,13 @@ pub struct ThemeTokens {
     pub syntax_string: Option<DarkLight>,
     pub syntax_number: Option<DarkLight>,
     pub syntax_comment: Option<DarkLight>,
+    pub syntax_attribute: Option<DarkLight>,
     pub syntax_type: Option<DarkLight>,
     pub syntax_function: Option<DarkLight>,
     pub syntax_variable: Option<DarkLight>,
     pub syntax_constant: Option<DarkLight>,
+    pub syntax_builtin: Option<DarkLight>,
+    pub syntax_macro: Option<DarkLight>,
     pub syntax_operator: Option<DarkLight>,
     pub syntax_punctuation: Option<DarkLight>,
     pub background: Option<DarkLight>,
@@ -97,6 +100,8 @@ pub struct ThemeTokens {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// Built-in theme name (e.g., "tokyonight")
+    pub name: Option<String>,
     /// Theme mode: "dark" or "light"
     pub mode: Option<String>,
     /// Named color definitions (e.g., green1 = "#A3BE8C")
@@ -105,6 +110,40 @@ pub struct ThemeConfig {
     pub theme: ThemeTokens,
 }
 
+const BUILTIN_THEMES: &[(&str, &str)] = &[
+    ("aura", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/aura.json"))),
+    ("ayu", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/ayu.json"))),
+    ("catppuccin", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/catppuccin.json"))),
+    ("catppuccin-frappe", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/catppuccin-frappe.json"))),
+    ("catppuccin-macchiato", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/catppuccin-macchiato.json"))),
+    ("cobalt2", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/cobalt2.json"))),
+    ("cursor", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/cursor.json"))),
+    ("dracula", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/dracula.json"))),
+    ("everforest", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/everforest.json"))),
+    ("flexoki", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/flexoki.json"))),
+    ("github", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/github.json"))),
+    ("gruvbox", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/gruvbox.json"))),
+    ("kanagawa", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/kanagawa.json"))),
+    ("lucent-orng", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/lucent-orng.json"))),
+    ("material", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/material.json"))),
+    ("matrix", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/matrix.json"))),
+    ("mercury", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/mercury.json"))),
+    ("monokai", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/monokai.json"))),
+    ("nightowl", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/nightowl.json"))),
+    ("nord", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/nord.json"))),
+    ("one-dark", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/one-dark.json"))),
+    ("opencode", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/opencode.json"))),
+    ("orng", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/orng.json"))),
+    ("palenight", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/palenight.json"))),
+    ("rosepine", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/rosepine.json"))),
+    ("solarized", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/solarized.json"))),
+    ("synthwave84", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/synthwave84.json"))),
+    ("tokyonight", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/tokyonight.json"))),
+    ("vercel", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/vercel.json"))),
+    ("vesper", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/vesper.json"))),
+    ("zenburn", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/themes/zenburn.json"))),
+];
+
 impl ThemeConfig {
     /// Check if config specifies light mode
     pub fn is_light_mode(&self) -> bool {
@@ -112,6 +151,34 @@ impl ThemeConfig {
             .as_ref()
             .map(|m| m.eq_ignore_ascii_case("light"))
             .unwrap_or(false)
+    }
+
+    fn resolved_config(&self) -> ThemeConfig {
+        let mut base = self
+            .name
+            .as_deref()
+            .and_then(|name| ThemeConfig::builtin(name))
+            .unwrap_or_default();
+
+        base.name = self.name.clone();
+        if self.mode.is_some() {
+            base.mode = self.mode.clone();
+        }
+        base.defs.extend(self.defs.clone());
+        merge_theme_tokens(&mut base.theme, &self.theme);
+        base
+    }
+
+    fn builtin(name: &str) -> Option<ThemeConfig> {
+        let key = name.to_ascii_lowercase();
+        let json = BUILTIN_THEMES
+            .iter()
+            .find(|(theme_name, _)| *theme_name == key)
+            .map(|(_, json)| *json)?;
+        let mut config: ThemeConfig =
+            serde_json::from_str(json).expect("builtin theme JSON should parse");
+        config.name = Some(key);
+        Some(config)
     }
 }
 
@@ -136,10 +203,13 @@ pub struct ResolvedTheme {
     pub syntax_string: Color,
     pub syntax_number: Color,
     pub syntax_comment: Color,
+    pub syntax_attribute: Color,
     pub syntax_type: Color,
     pub syntax_function: Color,
     pub syntax_variable: Color,
     pub syntax_constant: Color,
+    pub syntax_builtin: Color,
+    pub syntax_macro: Color,
     pub syntax_operator: Color,
     pub syntax_punctuation: Color,
 
@@ -215,8 +285,9 @@ impl ThemeConfig {
     /// Resolve theme config to concrete colors
     /// If light_mode is true, prefers .light values, falls back to .dark
     pub fn resolve(&self, light_mode: bool) -> ResolvedTheme {
-        let defs = &self.defs;
-        let tokens = &self.theme;
+        let merged = self.resolved_config();
+        let defs = &merged.defs;
+        let tokens = &merged.theme;
 
         // Helper to resolve a token with fallback
         // In light mode: try .light first, fall back to .dark
@@ -278,10 +349,22 @@ impl ThemeConfig {
             syntax_string: resolve(&tokens.syntax_string, resolve(&tokens.success, Color::Green)),
             syntax_number: resolve(&tokens.syntax_number, resolve(&tokens.warning, Color::Yellow)),
             syntax_comment: resolve(&tokens.syntax_comment, resolve(&tokens.text_muted, Color::DarkGray)),
+            syntax_attribute: resolve(
+                &tokens.syntax_attribute,
+                resolve(&tokens.syntax_keyword, resolve(&tokens.accent, Color::Cyan)),
+            ),
             syntax_type: resolve(&tokens.syntax_type, resolve(&tokens.primary, Color::Cyan)),
             syntax_function: resolve(&tokens.syntax_function, resolve(&tokens.info, Color::Blue)),
             syntax_variable: resolve(&tokens.syntax_variable, resolve(&tokens.error, Color::Red)),
             syntax_constant: resolve(&tokens.syntax_constant, resolve(&tokens.secondary, Color::Cyan)),
+            syntax_builtin: resolve(
+                &tokens.syntax_builtin,
+                resolve(&tokens.syntax_type, resolve(&tokens.primary, Color::Cyan)),
+            ),
+            syntax_macro: resolve(
+                &tokens.syntax_macro,
+                resolve(&tokens.syntax_function, resolve(&tokens.info, Color::Blue)),
+            ),
             syntax_operator: resolve(&tokens.syntax_operator, resolve(&tokens.text, Color::Reset)),
             syntax_punctuation: resolve(&tokens.syntax_punctuation, resolve(&tokens.text_muted, Color::DarkGray)),
 
@@ -305,6 +388,111 @@ impl ThemeConfig {
             delete: color::gradient_from_color(diff_removed),
             modify: color::gradient_from_color(warning),
         }
+    }
+}
+
+fn merge_theme_tokens(base: &mut ThemeTokens, overlay: &ThemeTokens) {
+    if overlay.text.is_some() {
+        base.text = overlay.text.clone();
+    }
+    if overlay.text_muted.is_some() {
+        base.text_muted = overlay.text_muted.clone();
+    }
+    if overlay.primary.is_some() {
+        base.primary = overlay.primary.clone();
+    }
+    if overlay.secondary.is_some() {
+        base.secondary = overlay.secondary.clone();
+    }
+    if overlay.accent.is_some() {
+        base.accent = overlay.accent.clone();
+    }
+    if overlay.error.is_some() {
+        base.error = overlay.error.clone();
+    }
+    if overlay.warning.is_some() {
+        base.warning = overlay.warning.clone();
+    }
+    if overlay.success.is_some() {
+        base.success = overlay.success.clone();
+    }
+    if overlay.info.is_some() {
+        base.info = overlay.info.clone();
+    }
+    if overlay.syntax_plain.is_some() {
+        base.syntax_plain = overlay.syntax_plain.clone();
+    }
+    if overlay.syntax_keyword.is_some() {
+        base.syntax_keyword = overlay.syntax_keyword.clone();
+    }
+    if overlay.syntax_string.is_some() {
+        base.syntax_string = overlay.syntax_string.clone();
+    }
+    if overlay.syntax_number.is_some() {
+        base.syntax_number = overlay.syntax_number.clone();
+    }
+    if overlay.syntax_comment.is_some() {
+        base.syntax_comment = overlay.syntax_comment.clone();
+    }
+    if overlay.syntax_attribute.is_some() {
+        base.syntax_attribute = overlay.syntax_attribute.clone();
+    }
+    if overlay.syntax_type.is_some() {
+        base.syntax_type = overlay.syntax_type.clone();
+    }
+    if overlay.syntax_function.is_some() {
+        base.syntax_function = overlay.syntax_function.clone();
+    }
+    if overlay.syntax_variable.is_some() {
+        base.syntax_variable = overlay.syntax_variable.clone();
+    }
+    if overlay.syntax_constant.is_some() {
+        base.syntax_constant = overlay.syntax_constant.clone();
+    }
+    if overlay.syntax_builtin.is_some() {
+        base.syntax_builtin = overlay.syntax_builtin.clone();
+    }
+    if overlay.syntax_macro.is_some() {
+        base.syntax_macro = overlay.syntax_macro.clone();
+    }
+    if overlay.syntax_operator.is_some() {
+        base.syntax_operator = overlay.syntax_operator.clone();
+    }
+    if overlay.syntax_punctuation.is_some() {
+        base.syntax_punctuation = overlay.syntax_punctuation.clone();
+    }
+    if overlay.background.is_some() {
+        base.background = overlay.background.clone();
+    }
+    if overlay.background_panel.is_some() {
+        base.background_panel = overlay.background_panel.clone();
+    }
+    if overlay.background_element.is_some() {
+        base.background_element = overlay.background_element.clone();
+    }
+    if overlay.border.is_some() {
+        base.border = overlay.border.clone();
+    }
+    if overlay.border_active.is_some() {
+        base.border_active = overlay.border_active.clone();
+    }
+    if overlay.border_subtle.is_some() {
+        base.border_subtle = overlay.border_subtle.clone();
+    }
+    if overlay.diff_added.is_some() {
+        base.diff_added = overlay.diff_added.clone();
+    }
+    if overlay.diff_removed.is_some() {
+        base.diff_removed = overlay.diff_removed.clone();
+    }
+    if overlay.diff_context.is_some() {
+        base.diff_context = overlay.diff_context.clone();
+    }
+    if overlay.diff_line_number.is_some() {
+        base.diff_line_number = overlay.diff_line_number.clone();
+    }
+    if overlay.diff_ext_marker.is_some() {
+        base.diff_ext_marker = overlay.diff_ext_marker.clone();
     }
 }
 
