@@ -27,7 +27,15 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_active_visible_if_needed(visible_height);
     let animation_frame = app.animation_frame();
     let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
-    app.clamp_scroll(view_lines.len(), visible_height, app.allow_overscroll());
+    let step_direction = app.multi_diff.current_step_direction();
+    let (display_len, _) = crate::app::display_metrics(
+        &view_lines,
+        app.view_mode,
+        app.animation_phase,
+        app.scroll_offset,
+        step_direction,
+    );
+    app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
 
     // Split area into gutter (fixed) and content (scrollable)
     let chunks = Layout::default()
@@ -204,16 +212,10 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
                 .begin_symbol(Some("↑"))
                 .end_symbol(Some("↓"));
 
-            // Calculate total displayable lines (excluding deleted)
-            let total_displayable = view_lines
-                .iter()
-                .filter(|l| !matches!(l.kind, LineKind::Deleted | LineKind::PendingDelete))
-                .count();
-
             let visible_lines = content_area.height as usize;
-            if total_displayable > visible_lines {
+            if display_len > visible_lines {
                 let mut scrollbar_state =
-                    ScrollbarState::new(total_displayable).position(app.scroll_offset);
+                    ScrollbarState::new(display_len).position(app.scroll_offset);
 
                 frame.render_stateful_widget(
                     scrollbar,

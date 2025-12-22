@@ -1,7 +1,7 @@
 //! Application state and logic
 
 use crate::config::ResolvedTheme;
-use oyo_core::{AnimationFrame, MultiFileDiff, StepDirection, StepState};
+use oyo_core::{AnimationFrame, LineKind, MultiFileDiff, StepDirection, StepState, ViewLine};
 use std::time::{Duration, Instant};
 
 /// Animation phase for smooth transitions
@@ -700,14 +700,17 @@ impl App {
 
         let frame = self.animation_frame();
         let view = self.multi_diff.current_navigator().current_view_with_frame(frame);
+        let step_direction = self.multi_diff.current_step_direction();
 
-        // Prefer cursor (primary) over any active line for scroll target
-        let idx = view
-            .iter()
-            .position(|line| line.is_primary_active)
-            .or_else(|| view.iter().position(|line| line.is_active));
+        let (_display_len, display_idx) = display_metrics(
+            &view,
+            self.view_mode,
+            self.animation_phase,
+            self.scroll_offset,
+            step_direction,
+        );
 
-        if let Some(idx) = idx {
+        if let Some(idx) = display_idx {
             let margin = 3.min(viewport_height / 4);
 
             // Check if active line is above viewport
@@ -725,14 +728,17 @@ impl App {
     pub fn center_on_active(&mut self, viewport_height: usize) {
         let frame = self.animation_frame();
         let view = self.multi_diff.current_navigator().current_view_with_frame(frame);
+        let step_direction = self.multi_diff.current_step_direction();
 
-        // Prefer cursor (primary) over any active line for centering
-        let idx = view
-            .iter()
-            .position(|line| line.is_primary_active)
-            .or_else(|| view.iter().position(|line| line.is_active));
+        let (_display_len, display_idx) = display_metrics(
+            &view,
+            self.view_mode,
+            self.animation_phase,
+            self.scroll_offset,
+            step_direction,
+        );
 
-        if let Some(idx) = idx {
+        if let Some(idx) = display_idx {
             let half_viewport = viewport_height / 2;
             self.scroll_offset = idx.saturating_sub(half_viewport);
         }
@@ -843,6 +849,133 @@ impl App {
     }
 }
 
+/// Compute display metrics for scroll calculations.
+/// Returns (display_len, display_idx_of_active).
+/// display_idx is the row index of the primary active line (fallback to any active)
+/// in the filtered/displayed line stream for the current view mode.
+pub fn display_metrics(
+    view: &[ViewLine],
+    view_mode: ViewMode,
+    animation_phase: AnimationPhase,
+    scroll_offset: usize,
+    step_direction: StepDirection,
+) -> (usize, Option<usize>) {
+    match view_mode {
+        ViewMode::SinglePane => {
+            let idx = view
+                .iter()
+                .position(|l| l.is_primary_active)
+                .or_else(|| view.iter().position(|l| l.is_active));
+            (view.len(), idx)
+        }
+        ViewMode::Evolution => evolution_display_metrics(view, animation_phase),
+        ViewMode::Split => split_display_metrics(view, scroll_offset, step_direction),
+    }
+}
+
+/// Evolution view skips Deleted lines and idle PendingDelete lines.
+fn evolution_display_metrics(
+    view: &[ViewLine],
+    animation_phase: AnimationPhase,
+) -> (usize, Option<usize>) {
+    let mut display_len = 0usize;
+    let mut primary_idx: Option<usize> = None;
+    let mut any_active_idx: Option<usize> = None;
+
+    for line in view {
+        let visible = match line.kind {
+            LineKind::Deleted => false,
+            LineKind::PendingDelete => {
+                // Show during animation if active, hide when idle
+                line.is_active && animation_phase != AnimationPhase::Idle
+            }
+            _ => true,
+        };
+
+        if visible {
+            if line.is_primary_active && primary_idx.is_none() {
+                primary_idx = Some(display_len);
+            }
+            if line.is_active && any_active_idx.is_none() {
+                any_active_idx = Some(display_len);
+            }
+            display_len += 1;
+        }
+    }
+
+    (display_len, primary_idx.or(any_active_idx))
+}
+
+/// Split view shows old_line on left pane, new_line on right pane.
+/// display_len = max(old_count, new_count).
+/// For active index: primary always dominates; among candidates, minimize jump from
+/// scroll_offset with tie-break by step direction.
+fn split_display_metrics(
+    view: &[ViewLine],
+    scroll_offset: usize,
+    step_direction: StepDirection,
+) -> (usize, Option<usize>) {
+    let mut old_count = 0usize;
+    let mut new_count = 0usize;
+    // Track primary separately from fallback (first non-primary active)
+    let mut old_primary_idx: Option<usize> = None;
+    let mut new_primary_idx: Option<usize> = None;
+    let mut old_fallback_idx: Option<usize> = None;
+    let mut new_fallback_idx: Option<usize> = None;
+
+    for line in view {
+        if line.old_line.is_some() {
+            if line.is_primary_active {
+                old_primary_idx = Some(old_count);
+            } else if line.is_active && old_fallback_idx.is_none() {
+                old_fallback_idx = Some(old_count);
+            }
+            old_count += 1;
+        }
+        if line.new_line.is_some() {
+            if line.is_primary_active {
+                new_primary_idx = Some(new_count);
+            } else if line.is_active && new_fallback_idx.is_none() {
+                new_fallback_idx = Some(new_count);
+            }
+            new_count += 1;
+        }
+    }
+
+    let display_len = old_count.max(new_count);
+
+    // Prefer primary over fallback: only use fallback when no primary exists on either side
+    let (old_idx, new_idx) = if old_primary_idx.is_some() || new_primary_idx.is_some() {
+        (old_primary_idx, new_primary_idx)
+    } else {
+        (old_fallback_idx, new_fallback_idx)
+    };
+
+    // Pick index that minimizes jump from current scroll_offset
+    let active_idx = match (old_idx, new_idx) {
+        (Some(old), Some(new)) => {
+            let old_dist = (old as isize - scroll_offset as isize).abs();
+            let new_dist = (new as isize - scroll_offset as isize).abs();
+            if old_dist < new_dist {
+                Some(old)
+            } else if new_dist < old_dist {
+                Some(new)
+            } else {
+                // Tie-break by step direction (default to new side)
+                match step_direction {
+                    StepDirection::Forward | StepDirection::None => Some(new),
+                    StepDirection::Backward => Some(old),
+                }
+            }
+        }
+        (Some(old), None) => Some(old),
+        (None, Some(new)) => Some(new),
+        (None, None) => None,
+    };
+
+    (display_len, active_idx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,5 +1009,115 @@ mod tests {
         // short file: saturating_sub chain -> 0
         assert_eq!(max_scroll(5, 20, true), 0);
         assert_eq!(max_scroll(1, 20, true), 0);
+    }
+
+    fn make_view_line(
+        kind: LineKind,
+        old_line: Option<usize>,
+        new_line: Option<usize>,
+        is_active: bool,
+        is_primary_active: bool,
+    ) -> ViewLine {
+        ViewLine {
+            content: String::new(),
+            spans: vec![],
+            kind,
+            old_line,
+            new_line,
+            is_active,
+            is_primary_active,
+            show_hunk_extent: false,
+        }
+    }
+
+    #[test]
+    fn test_evolution_metrics_skips_deleted() {
+        let view = vec![
+            make_view_line(LineKind::Context, Some(1), Some(1), false, false),
+            make_view_line(LineKind::Deleted, Some(2), None, false, false),
+            make_view_line(LineKind::Deleted, Some(3), None, false, false),
+            make_view_line(LineKind::Context, Some(4), Some(2), true, true),
+        ];
+        // Deleted lines skipped: display_len = 2 (context + context)
+        // Primary active at raw index 3, but display index 1 (after skipping 2 deleted)
+        let (len, idx) = evolution_display_metrics(&view, AnimationPhase::Idle);
+        assert_eq!(len, 2);
+        assert_eq!(idx, Some(1));
+    }
+
+    #[test]
+    fn test_evolution_metrics_pending_delete_visibility() {
+        // PendingDelete: visible only when is_active && animation_phase != Idle
+        let view = vec![
+            make_view_line(LineKind::Context, Some(1), Some(1), false, false),
+            make_view_line(LineKind::PendingDelete, Some(2), None, true, true),
+            make_view_line(LineKind::Context, Some(3), Some(2), false, false),
+        ];
+
+        // Idle: PendingDelete hidden even if active
+        let (len, idx) = evolution_display_metrics(&view, AnimationPhase::Idle);
+        assert_eq!(len, 2);
+        assert_eq!(idx, None); // primary was on the hidden line
+
+        // FadeOut: PendingDelete visible when active
+        let (len, idx) = evolution_display_metrics(&view, AnimationPhase::FadeOut);
+        assert_eq!(len, 3);
+        assert_eq!(idx, Some(1));
+
+        // FadeIn: also visible
+        let (len, idx) = evolution_display_metrics(&view, AnimationPhase::FadeIn);
+        assert_eq!(len, 3);
+        assert_eq!(idx, Some(1));
+    }
+
+    #[test]
+    fn test_split_metrics_primary_dominates() {
+        // Insert-only change: primary exists only on new side (new_line.is_some())
+        // Old side has a non-primary active line closer to scroll_offset
+        let view = vec![
+            make_view_line(LineKind::Context, Some(1), Some(1), true, false),  // active but not primary, both sides
+            make_view_line(LineKind::Context, Some(2), Some(2), false, false),
+            make_view_line(LineKind::Inserted, None, Some(3), true, true),     // primary, new side only
+        ];
+        // scroll_offset=0: old side's active at idx 0 is closer than new side's primary at idx 2
+        // But primary must dominate, so result should be new side's idx 2
+        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        assert_eq!(len, 3); // max(2 old, 3 new)
+        assert_eq!(idx, Some(2)); // new_primary_idx, not old_fallback_idx
+    }
+
+    #[test]
+    fn test_split_metrics_minimize_jump() {
+        // Both sides have primary active (e.g., modified line with old+new)
+        let view = vec![
+            make_view_line(LineKind::Context, Some(1), Some(1), false, false),
+            make_view_line(LineKind::Context, Some(2), Some(2), false, false),
+            make_view_line(LineKind::Modified, Some(3), Some(3), true, true),
+            make_view_line(LineKind::Context, Some(4), Some(4), false, false),
+        ];
+        // Both old and new primary at idx 2
+        // scroll_offset=0: both equally close (dist=2), tie-break by direction
+        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        assert_eq!(idx, Some(2)); // new side wins on Forward
+
+        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Backward);
+        assert_eq!(idx, Some(2)); // old side wins on Backward (same value here)
+
+        // scroll_offset=10: both at dist=8, tie-break applies
+        let (_, idx) = split_display_metrics(&view, 10, StepDirection::Forward);
+        assert_eq!(idx, Some(2));
+    }
+
+    #[test]
+    fn test_split_metrics_fallback_when_no_primary() {
+        // No primary active, should fall back to first active on each side
+        let view = vec![
+            make_view_line(LineKind::Context, Some(1), Some(1), false, false),
+            make_view_line(LineKind::Context, Some(2), Some(2), true, false), // active, not primary
+            make_view_line(LineKind::Context, Some(3), Some(3), false, false),
+        ];
+        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        assert_eq!(len, 3);
+        assert_eq!(idx, Some(1)); // fallback to first active
     }
 }

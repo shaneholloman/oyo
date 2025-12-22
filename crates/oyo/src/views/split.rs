@@ -19,8 +19,16 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_height = area.height as usize;
     app.ensure_active_visible_if_needed(visible_height);
     let animation_frame = app.animation_frame();
-    let total_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame).len();
-    app.clamp_scroll(total_lines, visible_height, app.allow_overscroll());
+    let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
+    let step_direction = app.multi_diff.current_step_direction();
+    let (display_len, _) = crate::app::display_metrics(
+        &view_lines,
+        app.view_mode,
+        app.animation_phase,
+        app.scroll_offset,
+        step_direction,
+    );
+    app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
 
     // Split into two panes
     let chunks = Layout::default()
