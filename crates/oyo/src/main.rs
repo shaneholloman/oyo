@@ -393,6 +393,15 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                                 app.prev_hunk();
                             }
                         }
+                        // Jump to begin/end of current hunk
+                        KeyCode::Char('b') => {
+                            app.reset_count();
+                            app.goto_hunk_start();
+                        }
+                        KeyCode::Char('e') => {
+                            app.reset_count();
+                            app.goto_hunk_end();
+                        }
                         KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             app.reset_count();
                             // Toggle file path popup
