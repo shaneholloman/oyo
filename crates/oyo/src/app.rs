@@ -71,6 +71,10 @@ pub struct App {
     pub file_panel_visible: bool,
     /// File list scroll offset
     pub file_list_scroll: usize,
+    /// File list filter text
+    pub file_filter: String,
+    /// True when filter input is active
+    pub file_filter_active: bool,
     /// Whether animations are enabled (false = instant transitions)
     pub animation_enabled: bool,
     /// Zen mode - hide UI chrome (top bar, progress bar, help bar)
@@ -163,6 +167,8 @@ impl App {
             file_list_focused: false,
             file_panel_visible: true,
             file_list_scroll: 0,
+            file_filter: String::new(),
+            file_filter_active: false,
             animation_enabled: false,
             zen_mode: false,
             needs_scroll_to_active: true, // Scroll to first change on startup
@@ -468,6 +474,22 @@ impl App {
 
     // File navigation methods
     pub fn next_file(&mut self) {
+        if !self.file_filter.is_empty() {
+            let indices = self.filtered_file_indices();
+            if indices.is_empty() {
+                return;
+            }
+            let current = self.multi_diff.selected_index;
+            let pos = indices.iter().position(|&i| i == current);
+            let next_index = match pos {
+                Some(p) if p + 1 < indices.len() => indices[p + 1],
+                None => indices[0],
+                _ => return,
+            };
+            self.select_file(next_index);
+            return;
+        }
+
         // Save current scroll positions
         let old_index = self.multi_diff.selected_index;
         if self.multi_diff.next_file() {
@@ -485,6 +507,22 @@ impl App {
     }
 
     pub fn prev_file(&mut self) {
+        if !self.file_filter.is_empty() {
+            let indices = self.filtered_file_indices();
+            if indices.is_empty() {
+                return;
+            }
+            let current = self.multi_diff.selected_index;
+            let pos = indices.iter().position(|&i| i == current);
+            let prev_index = match pos {
+                Some(p) if p > 0 => indices[p - 1],
+                None => indices[indices.len().saturating_sub(1)],
+                _ => return,
+            };
+            self.select_file(prev_index);
+            return;
+        }
+
         // Save current scroll positions
         let old_index = self.multi_diff.selected_index;
         if self.multi_diff.prev_file() {
@@ -512,7 +550,35 @@ impl App {
         self.animation_phase = AnimationPhase::Idle;
         self.animation_progress = 1.0;
         self.centered_once = false;
+        self.update_file_list_scroll();
         self.handle_file_enter();
+    }
+
+    pub fn start_file_filter(&mut self) {
+        self.file_filter_active = true;
+        self.file_filter.clear();
+        self.file_list_scroll = 0;
+        self.ensure_selection_matches_filter();
+        self.update_file_list_scroll();
+    }
+
+    pub fn stop_file_filter(&mut self) {
+        self.file_filter_active = false;
+    }
+
+    pub fn push_file_filter_char(&mut self, ch: char) {
+        self.file_filter.push(ch);
+        self.on_filter_changed();
+    }
+
+    pub fn pop_file_filter_char(&mut self) {
+        self.file_filter.pop();
+        self.on_filter_changed();
+    }
+
+    pub fn clear_file_filter(&mut self) {
+        self.file_filter.clear();
+        self.on_filter_changed();
     }
 
     /// Check if current file would be blank at step 0 (new file: empty old, non-empty new)
@@ -558,16 +624,59 @@ impl App {
     }
 
     fn update_file_list_scroll(&mut self) {
+        let indices = self.filtered_file_indices();
+        if indices.is_empty() {
+            self.file_list_scroll = 0;
+            return;
+        }
+
         // Keep selected file visible in the file list
         let selected = self.multi_diff.selected_index;
-        if selected < self.file_list_scroll {
-            self.file_list_scroll = selected;
+        let selected_pos = indices
+            .iter()
+            .position(|&i| i == selected)
+            .unwrap_or(0);
+        if selected_pos < self.file_list_scroll {
+            self.file_list_scroll = selected_pos;
         }
         // Assume roughly 20 visible files
         let visible_files = 20;
-        if selected >= self.file_list_scroll + visible_files {
-            self.file_list_scroll = selected.saturating_sub(visible_files - 1);
+        if selected_pos >= self.file_list_scroll + visible_files {
+            self.file_list_scroll = selected_pos.saturating_sub(visible_files - 1);
         }
+    }
+
+    fn on_filter_changed(&mut self) {
+        self.file_list_scroll = 0;
+        self.ensure_selection_matches_filter();
+        self.update_file_list_scroll();
+    }
+
+    fn ensure_selection_matches_filter(&mut self) {
+        if self.file_filter.is_empty() {
+            return;
+        }
+        let indices = self.filtered_file_indices();
+        if indices.is_empty() {
+            return;
+        }
+        if !indices.contains(&self.multi_diff.selected_index) {
+            self.select_file(indices[0]);
+        }
+    }
+
+    pub fn filtered_file_indices(&self) -> Vec<usize> {
+        if self.file_filter.is_empty() {
+            return (0..self.multi_diff.files.len()).collect();
+        }
+        let query = self.file_filter.to_ascii_lowercase();
+        self.multi_diff
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| file.display_name.to_ascii_lowercase().contains(&query))
+            .map(|(idx, _)| idx)
+            .collect()
     }
 
     fn start_animation(&mut self) {

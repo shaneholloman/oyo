@@ -97,7 +97,10 @@ pub struct ThemeConfig {
 impl ThemeConfig {
     /// Check if config specifies light mode
     pub fn is_light_mode(&self) -> bool {
-        self.mode.as_ref().map(|m| m.eq_ignore_ascii_case("light")).unwrap_or(false)
+        self.mode
+            .as_ref()
+            .map(|m| m.eq_ignore_ascii_case("light"))
+            .unwrap_or(false)
     }
 }
 
@@ -122,6 +125,7 @@ pub struct ResolvedTheme {
     pub background_element: Option<Color>,
 
     // Borders
+    #[allow(dead_code)]
     pub border: Color,
     pub border_active: Color,
     pub border_subtle: Color,
@@ -198,7 +202,8 @@ impl ThemeConfig {
                 .and_then(|dl| {
                     if light_mode {
                         // Try light first, fallback to dark
-                        dl.light.as_ref()
+                        dl.light
+                            .as_ref()
                             .and_then(|v| color::resolve_color(v, defs))
                             .or_else(|| color::resolve_color(&dl.dark, defs))
                     } else {

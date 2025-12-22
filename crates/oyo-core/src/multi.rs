@@ -256,6 +256,16 @@ impl MultiFileDiff {
         self.files.len()
     }
 
+    /// Repository root path (git mode only)
+    pub fn repo_root(&self) -> Option<&Path> {
+        self.repo_root.as_deref()
+    }
+
+    /// True if this diff was created from git changes
+    pub fn is_git_mode(&self) -> bool {
+        self.repo_root.is_some()
+    }
+
     /// Get the step direction of current navigator (if loaded)
     pub fn current_step_direction(&self) -> StepDirection {
         if let Some(Some(nav)) = self.navigators.get(self.selected_index) {

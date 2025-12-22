@@ -341,6 +341,28 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                     }
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    if app.file_filter_active {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Enter => {
+                                app.stop_file_filter();
+                            }
+                            KeyCode::Backspace => {
+                                app.pop_file_filter_char();
+                            }
+                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.clear_file_filter();
+                            }
+                            KeyCode::Char(c)
+                                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+                            {
+                                app.push_file_filter_char(c);
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     match key.code {
                         // Digit keys for vim-style counts (e.g., 10j, 5l)
                         KeyCode::Char(c @ '0'..='9') => {
@@ -477,6 +499,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             // Switch focus between file list and diff view
                             if app.is_multi_file() {
                                 app.file_list_focused = !app.file_list_focused;
+                                if !app.file_list_focused {
+                                    app.stop_file_filter();
+                                }
                             }
                         }
                         KeyCode::Char('+') | KeyCode::Char('=') => {
@@ -492,6 +517,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             // Toggle file list focus (Ctrl+A)
                             if app.is_multi_file() {
                                 app.file_list_focused = !app.file_list_focused;
+                                if !app.file_list_focused {
+                                    app.stop_file_filter();
+                                }
                             }
                         }
                         KeyCode::Char('a') => {
@@ -552,6 +580,10 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                             if app.is_multi_file() {
                                 app.toggle_file_panel();
                             }
+                        }
+                        KeyCode::Char('/') if app.file_list_focused => {
+                            app.reset_count();
+                            app.start_file_filter();
                         }
                         KeyCode::Char('?') => {
                             app.reset_count();

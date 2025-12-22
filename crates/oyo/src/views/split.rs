@@ -145,7 +145,8 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Render content with horizontal scroll (or empty state)
     if content_lines.is_empty() {
-        render_empty_state(frame, content_area, &app.theme);
+        let has_changes = !app.multi_diff.current_navigator().diff().significant_changes.is_empty();
+        render_empty_state(frame, content_area, &app.theme, has_changes);
     } else {
         let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
@@ -264,7 +265,8 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Render content with horizontal scroll (or empty state)
     if content_lines.is_empty() {
-        render_empty_state(frame, content_area, &app.theme);
+        let has_changes = !app.multi_diff.current_navigator().diff().significant_changes.is_empty();
+        render_empty_state(frame, content_area, &app.theme, has_changes);
     } else {
         let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)

@@ -89,6 +89,8 @@ Recommended git aliases in `~/.gitconfig`:
 | `↑` / `k` | Previous step (supports count) |
 | `→` / `l` | Next hunk (supports count) |
 | `←` / `h` | Previous hunk (supports count) |
+| `b` | Jump to beginning of current hunk |
+| `e` | Jump to end of current hunk |
 | `<` | First step |
 | `>` | Last step |
 | `g` | Go to start (scroll + first step) |

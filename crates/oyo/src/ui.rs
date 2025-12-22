@@ -1,15 +1,15 @@
 //! UI rendering for the TUI
 
 use crate::app::{App, ViewMode};
-use crate::views::{render_evolution, render_split, render_single_pane};
+use crate::views::{render_evolution, render_single_pane, render_split};
+use oyo_core::FileStatus;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
-use oyo_core::FileStatus;
 
 /// Truncate a path to fit a given width, using /.../ for middle sections
 fn truncate_path(path: &str, max_width: usize) -> String {
@@ -50,20 +50,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),    // Main content
-                Constraint::Length(1), // Bottom spacer
                 Constraint::Length(1), // Status bar
             ])
             .split(frame.area());
 
         draw_content(frame, app, chunks[0]);
-
-        // Spacer with background
-        if let Some(bg) = app.theme.background {
-            let spacer = Paragraph::new("").style(Style::default().bg(bg));
-            frame.render_widget(spacer, chunks[1]);
-        }
-
-        draw_status_bar(frame, app, chunks[2]);
+        draw_status_bar(frame, app, chunks[1]);
     }
 
     // Draw help popover if active
@@ -83,102 +75,171 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // View mode indicator
     let mode = match app.view_mode {
-        ViewMode::SinglePane => " SINGLE",
-        ViewMode::Split => " SPLIT",
-        ViewMode::Evolution => " EVOLUTION",
+        ViewMode::SinglePane => " SINGLE ",
+        ViewMode::Split => " SPLIT ",
+        ViewMode::Evolution => " EVOLUTION ",
     };
 
-    // Format: SINGLE  filepath.rs:main ▶ 2/10 +2 -2         1/2
     let file_path = app.current_file_path();
     let available_width = area.width as usize;
-    // Reserve space for mode, path:branch, step counter, stats, file counter
-    let branch_suffix_len = app.git_branch.as_ref().map(|b| b.len() + 1).unwrap_or(0); // ":branch"
-    let path_max_width = available_width.saturating_sub(50 + branch_suffix_len);
 
-    // On narrow viewports, show just the filename
-    let display_path = if available_width < 80 {
-        // Extract just the filename
-        file_path.rsplit('/').next().unwrap_or(&file_path).to_string()
+    let file_name = file_path.rsplit('/').next().unwrap_or(&file_path);
+    let scope_full = if let Some(branch) = app.git_branch.as_ref() {
+        format!("{}@{}", file_path, branch)
     } else {
-        truncate_path(&file_path, path_max_width)
+        file_path.clone()
+    };
+    let scope_short = if let Some(branch) = app.git_branch.as_ref() {
+        format!("{}@{}", file_name, branch)
+    } else {
+        file_name.to_string()
     };
 
-    // Branch suffix for git mode (":main")
-    let branch_suffix = app.git_branch.as_ref().map(|b| format!(":{}", b));
-
-    // Step counter and arrow (flash when autoplay is on)
-    let step_text = format!("{}/{}", state.current_step + 1, state.total_steps);
+    // Step counter and autoplay indicator (flash when autoplay is on)
+    let step_current = state.current_step + 1;
+    let step_total = state.total_steps;
+    let step_text = format!("{}/{}", step_current, step_total);
     let (arrow_style, step_style) = if app.autoplay {
         let flash = (std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis()
-            / 500) % 2 == 0;
+            / 500)
+            % 2
+            == 0;
         if flash {
-            (Style::default().fg(app.theme.warning), Style::default().fg(app.theme.warning))
+            (
+                Style::default().fg(app.theme.warning),
+                Style::default().fg(app.theme.warning),
+            )
         } else {
-            (Style::default().fg(app.theme.warning_dim()), Style::default().fg(app.theme.warning_dim()))
+            (
+                Style::default().fg(app.theme.warning_dim()),
+                Style::default().fg(app.theme.warning_dim()),
+            )
         }
     } else {
-        (Style::default().fg(app.theme.text_muted), Style::default().fg(app.theme.text))
+        (
+            Style::default().fg(app.theme.text_muted),
+            Style::default().fg(app.theme.text),
+        )
     };
 
     // Hunk counter
     let (current_hunk, total_hunks) = app.hunk_info();
     let hunk_text = if total_hunks > 0 {
-        Some(format!("@@{}/{}", current_hunk, total_hunks))
+        Some(format!("{}/{}", current_hunk, total_hunks))
     } else {
         None
     };
-    let hunk_len = hunk_text.as_ref().map(|s| s.len() + 1).unwrap_or(0);
 
     // File counter (at the end)
     let file_count = app.multi_diff.file_count();
     let current_file = app.multi_diff.selected_index + 1;
     let file_text = format!("{}/{}", current_file, file_count);
 
-    // Calculate padding to push file counter to the right
-    let left_content_width = mode.len() + 2 + display_path.len() + branch_suffix_len + 3 + step_text.len() + 1
-        + hunk_len + format!("+{}", insertions).len() + 1 + format!("-{}", deletions).len();
-    let right_width = file_text.len();
-    let padding = (area.width as usize).saturating_sub(left_content_width + right_width + 1);
+    // Build CENTER section: progress bar (wide) + step counter
+    let show_bar = available_width >= 80;
+    let mut center_spans = Vec::new();
+    let autoplay_marker = if app.autoplay { "▶" } else { " " };
+    center_spans.push(Span::styled(autoplay_marker, arrow_style));
+    center_spans.push(Span::raw(" "));
+    if show_bar {
+        let bar_width = 6usize;
+        let progress = if step_total > 0 {
+            step_current as f64 / step_total as f64
+        } else {
+            0.0
+        };
+        let filled = ((progress * bar_width as f64).round() as usize).min(bar_width);
+        let empty = bar_width.saturating_sub(filled);
+        let filled_bar = "=".repeat(filled);
+        let empty_bar = "-".repeat(empty);
 
-    // Build the status line
-    let mut spans = vec![
-        Span::styled(mode, Style::default().fg(app.theme.primary)),
-        Span::raw("  "),
+        center_spans.push(Span::styled("[", Style::default().fg(app.theme.text_muted)));
+        center_spans.push(Span::styled(
+            filled_bar,
+            Style::default().fg(app.theme.accent),
+        ));
+        center_spans.push(Span::styled(
+            empty_bar,
+            Style::default().fg(app.theme.text_muted),
+        ));
+        center_spans.push(Span::styled("]", Style::default().fg(app.theme.text_muted)));
+        center_spans.push(Span::raw(" "));
+    }
+    center_spans.push(Span::styled(step_text.clone(), step_style));
+
+    // Build RIGHT section: stats + hunk + file
+    let mut right_spans = vec![
+        Span::styled(
+            format!("+{}", insertions),
+            Style::default().fg(app.theme.success),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("-{}", deletions),
+            Style::default().fg(app.theme.error),
+        ),
+    ];
+    if let Some(ref hunk) = hunk_text {
+        right_spans.push(Span::raw("  "));
+        right_spans.push(Span::styled(
+            format!("hunk {}", hunk),
+            Style::default().fg(app.theme.diff_line_number),
+        ));
+    }
+    right_spans.push(Span::raw("  "));
+    right_spans.push(Span::styled(
+        format!("file {}", file_text),
+        Style::default().fg(app.theme.text_muted),
+    ));
+
+    // Build LEFT section: mode + scope (path + branch)
+    let center_width: usize = center_spans.iter().map(|s| s.content.len()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let left_fixed_width = mode.len() + 1;
+    let min_padding = 2;
+    let path_max_width = available_width
+        .saturating_sub(center_width + right_width + left_fixed_width + min_padding * 2);
+    let scope_base = if available_width < 60 {
+        scope_short
+    } else {
+        scope_full
+    };
+    let display_scope = truncate_path(&scope_base, path_max_width);
+
+    let left_spans = vec![
+        Span::styled(
+            mode,
+            Style::default()
+                .fg(app.theme.background.unwrap_or(Color::Black))
+                .bg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(display_scope, Style::default().fg(app.theme.text_muted)),
     ];
 
-    spans.push(Span::styled(display_path, Style::default().fg(app.theme.text_muted)));
+    // Calculate widths
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    // Calculate padding to center the middle section
 
-    // Add branch suffix if in git mode (":main")
-    if let Some(ref suffix) = branch_suffix {
-        spans.push(Span::styled(suffix.clone(), Style::default().fg(app.theme.text_muted)));
-    }
+    // Distribute padding: left_pad centers the center section, right_pad pushes right to edge
+    let center_start = available_width / 2 - center_width / 2;
+    let left_pad = center_start.saturating_sub(left_width);
+    let right_pad = available_width.saturating_sub(center_start + center_width + right_width);
 
-    spans.extend([
-        Span::styled(" ▶", arrow_style),
-        Span::styled(step_text, step_style),
-        Span::raw(" "),
-    ]);
-
-    // Add hunk counter if there are multiple hunks
-    if let Some(ref hunk) = hunk_text {
-        spans.push(Span::styled(hunk.clone(), Style::default().fg(app.theme.diff_line_number)));
-        spans.push(Span::raw(" "));
-    }
-
-    spans.extend([
-        Span::styled(format!("+{}", insertions), Style::default().fg(app.theme.success)),
-        Span::raw(" "),
-        Span::styled(format!("-{}", deletions), Style::default().fg(app.theme.error)),
-        Span::raw(" ".repeat(padding.max(1))),
-        Span::styled(file_text, Style::default().fg(app.theme.text_muted)),
-    ]);
+    // Build final spans
+    let mut spans = left_spans;
+    spans.push(Span::raw(" ".repeat(left_pad.max(1))));
+    spans.extend(center_spans);
+    spans.push(Span::raw(" ".repeat(right_pad.max(1))));
+    spans.extend(right_spans);
 
     let status_line = Line::from(spans);
     let mut paragraph = Paragraph::new(status_line);
-    if let Some(bg) = app.theme.background {
+    if let Some(bg) = app.theme.background_element.or(app.theme.background) {
         paragraph = paragraph.style(Style::default().bg(bg));
     }
     frame.render_widget(paragraph, area);
@@ -222,92 +283,316 @@ fn draw_content(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    let files = &app.multi_diff.files;
+    // Split area: content on left, separator on right
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Separator
+        ])
+        .split(area);
 
-    let items: Vec<ListItem> = files
-        .iter()
-        .enumerate()
-        .skip(app.file_list_scroll)
-        .take(area.height.saturating_sub(2) as usize)
-        .map(|(idx, file)| {
-            let status_icon = match file.status {
-                FileStatus::Added | FileStatus::Untracked => "+",
-                FileStatus::Deleted => "-",
-                FileStatus::Modified => "~",
-                FileStatus::Renamed => "→",
-            };
+    let content_area = chunks[0];
+    let separator_area = chunks[1];
 
-            let mut status_style = match file.status {
-                FileStatus::Added | FileStatus::Untracked => Style::default().fg(app.theme.success),
-                FileStatus::Deleted => Style::default().fg(app.theme.error),
-                FileStatus::Modified => Style::default().fg(app.theme.warning),
-                FileStatus::Renamed => Style::default().fg(app.theme.info),
-            };
-
-            let is_selected = idx == app.multi_diff.selected_index;
-            let selected_bg = if is_selected {
-                if app.file_list_focused {
-                    app.theme.background_element.or(app.theme.background_panel)
-                } else {
-                    app.theme.background_panel
-                }
-            } else {
-                None
-            };
-
-            // Truncate filename to fit
-            let max_name_len = area.width.saturating_sub(12) as usize;
-            let name = if file.display_name.len() > max_name_len {
-                format!("…{}", &file.display_name[file.display_name.len().saturating_sub(max_name_len - 1)..])
-            } else {
-                file.display_name.clone()
-            };
-
-            let stats = format!("+{} -{}", file.insertions, file.deletions);
-
-            if let Some(bg) = selected_bg {
-                status_style = status_style.bg(bg);
-            }
-
-            let mut name_style = Style::default().fg(app.theme.text);
-            if is_selected && app.file_list_focused {
-                name_style = name_style.add_modifier(Modifier::BOLD);
-            }
-            if let Some(bg) = selected_bg {
-                name_style = name_style.bg(bg);
-            }
-
-            let mut stats_style = Style::default().fg(app.theme.text_muted);
-            if let Some(bg) = selected_bg {
-                stats_style = stats_style.bg(bg);
-            }
-
-            let line = Line::from(vec![
-                Span::styled(format!("{} ", status_icon), status_style),
-                Span::styled(format!("{:<width$}", name, width = max_name_len), name_style),
-                Span::styled(format!(" {:>8}", stats), stats_style),
-            ]);
-
-            ListItem::new(line)
-        })
-        .collect();
-
-    let border_style = if app.file_list_focused {
-        Style::default().fg(app.theme.border_active)
+    // Border color based on focus
+    let border_fg = if app.file_list_focused {
+        app.theme.border_active
     } else {
-        Style::default().fg(app.theme.border)
+        app.theme.border_subtle
+    };
+    let panel_bg = app.theme.background_panel.or(app.theme.background);
+
+    // Draw right separator - use main background, not panel background
+    let mut separator_style = Style::default().fg(border_fg);
+    if let Some(bg) = app.theme.background {
+        separator_style = separator_style.bg(bg);
+    }
+    let separator_text = "▏\n".repeat(separator_area.height as usize);
+    let separator = Paragraph::new(separator_text).style(separator_style);
+    frame.render_widget(separator, separator_area);
+
+    let show_filter =
+        app.file_list_focused || app.file_filter_active || !app.file_filter.is_empty();
+    let panel_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if show_filter {
+            vec![
+                Constraint::Length(5), // Header
+                Constraint::Min(0),    // List
+                Constraint::Length(3), // Filter
+            ]
+        } else {
+            vec![
+                Constraint::Length(5), // Header
+                Constraint::Min(0),    // List
+            ]
+        })
+        .split(content_area);
+
+    let header_area = panel_chunks[0];
+    let list_area = panel_chunks[1];
+    let filter_area = if show_filter {
+        Some(panel_chunks[2])
+    } else {
+        None
     };
 
-    let mut block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(border_style);
-    if let Some(bg) = app.theme.background_panel.or(app.theme.background) {
+    let files = &app.multi_diff.files;
+    let file_count = app.multi_diff.file_count();
+
+    let mut added = 0usize;
+    let mut modified = 0usize;
+    let mut deleted = 0usize;
+    let mut renamed = 0usize;
+
+    for file in files {
+        match file.status {
+            FileStatus::Added | FileStatus::Untracked => added += 1,
+            FileStatus::Deleted => deleted += 1,
+            FileStatus::Modified => modified += 1,
+            FileStatus::Renamed => renamed += 1,
+        }
+    }
+
+    let via_text = if app.multi_diff.is_git_mode() {
+        "via git"
+    } else {
+        "via diff"
+    };
+    let root_path = app
+        .multi_diff
+        .repo_root()
+        .and_then(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| ".".to_string());
+    let root_label = "Root ";
+    let root_max_width = header_area
+        .width
+        .saturating_sub((root_label.len() + 1) as u16) as usize;
+    let root_display = truncate_path(&root_path, root_max_width);
+
+    let header_lines = vec![
+        Line::raw(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(root_label, Style::default().fg(app.theme.text_muted)),
+            Span::styled(root_display, Style::default().fg(app.theme.text_muted)),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled("●", Style::default().fg(app.theme.text_muted)),
+            Span::raw(" "),
+            Span::styled(
+                format!("{} files", file_count),
+                Style::default().fg(app.theme.text),
+            ),
+            Span::raw(" "),
+            Span::styled(via_text, Style::default().fg(app.theme.text_muted)),
+        ]),
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                format!("+{}", added),
+                Style::default().fg(app.theme.success),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("~{}", modified),
+                Style::default().fg(app.theme.warning),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("-{}", deleted),
+                Style::default().fg(app.theme.error),
+            ),
+            Span::raw(" "),
+            Span::styled(format!("→{}", renamed), Style::default().fg(app.theme.info)),
+        ]),
+    ];
+
+    let mut header = Paragraph::new(header_lines);
+    if let Some(bg) = panel_bg {
+        header = header.style(Style::default().bg(bg));
+    }
+    frame.render_widget(header, header_area);
+
+    let filtered_indices = app.filtered_file_indices();
+    let mut items = Vec::new();
+    let mut remaining = list_area.height.saturating_sub(2) as usize;
+    let mut current_group: Option<String> = None;
+
+    let mut idx = app.file_list_scroll;
+    while idx < filtered_indices.len() && remaining > 0 {
+        let file_idx = filtered_indices[idx];
+        let file = &files[file_idx];
+        let group = match file.display_name.rsplit_once('/') {
+            Some((dir, _)) => dir.to_string(),
+            None => "Root Path".to_string(),
+        };
+
+        if current_group.as_deref() != Some(&group) {
+            if current_group.is_some() && remaining > 0 {
+                items.push(ListItem::new(Line::raw("")));
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            let header_max = list_area.width.saturating_sub(2).max(1) as usize;
+            let header_text = truncate_path(&group, header_max);
+            let header_line = Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    header_text,
+                    Style::default()
+                        .fg(app.theme.text_muted)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            items.push(ListItem::new(header_line));
+            current_group = Some(group);
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        let status_style = match file.status {
+            FileStatus::Added | FileStatus::Untracked => Style::default().fg(app.theme.success),
+            FileStatus::Deleted => Style::default().fg(app.theme.error),
+            FileStatus::Modified => Style::default().fg(app.theme.warning),
+            FileStatus::Renamed => Style::default().fg(app.theme.info),
+        };
+
+        let is_selected = file_idx == app.multi_diff.selected_index;
+        let selected_bg = if is_selected {
+            if app.file_list_focused {
+                app.theme.background_element.or(app.theme.background_panel)
+            } else {
+                app.theme.background_panel
+            }
+        } else {
+            None
+        };
+
+        // Truncate filename to fit
+        let file_name = file
+            .display_name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&file.display_name);
+        let max_name_len = list_area.width.saturating_sub(4).max(1) as usize;
+        let name = if file_name.len() > max_name_len {
+            if max_name_len == 1 {
+                "…".to_string()
+            } else {
+                format!(
+                    "…{}",
+                    &file_name[file_name.len().saturating_sub(max_name_len - 1)..]
+                )
+            }
+        } else {
+            file_name.to_string()
+        };
+
+        let mut icon_style = status_style;
+        if let Some(bg) = selected_bg {
+            icon_style = icon_style.bg(bg);
+        }
+
+        let mut name_style = Style::default().fg(app.theme.text);
+        if is_selected {
+            name_style = name_style.add_modifier(Modifier::BOLD);
+        }
+        if let Some(bg) = selected_bg {
+            name_style = name_style.bg(bg);
+        }
+
+        let marker_style = if is_selected {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.text_muted)
+        };
+        let marker = if is_selected { "•" } else { " " };
+
+        let line = Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::raw(" "),
+            Span::styled("■", icon_style),
+            Span::raw(" "),
+            Span::styled(name, name_style),
+        ]);
+
+        items.push(ListItem::new(line));
+        remaining -= 1;
+        idx += 1;
+    }
+
+    let mut block = Block::default().padding(ratatui::widgets::Padding::new(1, 1, 1, 0));
+    if let Some(bg) = panel_bg {
         block = block.style(Style::default().bg(bg));
     }
 
     let file_list = List::new(items).block(block);
 
-    frame.render_widget(file_list, area);
+    frame.render_widget(file_list, list_area);
+
+    let has_query = !app.file_filter.is_empty();
+    let no_results = has_query && filtered_indices.is_empty();
+    if no_results {
+        let mut empty = Paragraph::new(Line::from(Span::styled(
+            "No Filter Results",
+            Style::default().fg(app.theme.text_muted),
+        )))
+        .alignment(Alignment::Center)
+        .block(Block::default().padding(ratatui::widgets::Padding::new(0, 0, 1, 0)));
+        if let Some(bg) = panel_bg {
+            empty = empty.style(Style::default().bg(bg));
+        }
+        frame.render_widget(empty, list_area);
+    }
+
+    if let Some(filter_area) = filter_area {
+        let filter_bg = app
+            .theme
+            .background_element
+            .or(app.theme.background_panel)
+            .or(app.theme.background);
+        let filter_text = if app.file_filter_active {
+            if has_query {
+                format!("> {}", app.file_filter)
+            } else {
+                "> Filter file name".to_string()
+            }
+        } else if has_query {
+            app.file_filter.clone()
+        } else {
+            "\"/\" Filter".to_string()
+        };
+        let filter_style = if app.file_filter_active {
+            Style::default().fg(app.theme.text)
+        } else {
+            Style::default().fg(app.theme.text_muted)
+        };
+        let mut filter = Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(filter_text, filter_style),
+        ]))
+        .alignment(Alignment::Left);
+        let mut filter_block = Block::default().padding(ratatui::widgets::Padding::new(1, 1, 1, 0));
+        if let Some(bg) = filter_bg {
+            filter_block = filter_block.style(Style::default().bg(bg));
+        }
+        filter = filter.block(filter_block);
+        frame.render_widget(filter, filter_area);
+    }
 }
 
 fn draw_diff_view(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -329,8 +614,7 @@ fn draw_zen_progress(frame: &mut Frame, app: &mut App) {
     let y = area.height.saturating_sub(1);
 
     let progress_area = Rect::new(x, y, width, 1);
-    let text = Paragraph::new(label)
-        .style(Style::default().fg(app.theme.text));
+    let text = Paragraph::new(label).style(Style::default().fg(app.theme.text));
 
     frame.render_widget(text, progress_area);
 }
@@ -366,6 +650,7 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
         Line::from(Span::styled(" Navigation", section_style)),
         help_line("j / k / ↑↓", "Step forward/back".into()),
         help_line("h / l / ←→", "Prev/next hunk".into()),
+        help_line("b / e", "Hunk begin/end".into()),
         help_line("< / >", "First/last step".into()),
         help_line("g / G", "Go to start/end".into()),
         help_line("J / K", "Scroll up/down".into()),
@@ -394,6 +679,7 @@ fn draw_help_popover(frame: &mut Frame, app: &App) {
         lines.push(help_line("[ / ]", "Prev/next file".into()));
         lines.push(help_line("f", "Toggle file panel".into()));
         lines.push(help_line("Enter", "Focus file list".into()));
+        lines.push(help_line("/", "Filter files (when focused)".into()));
         lines.push(help_line("r", "Refresh all (when focused)".into()));
     }
 
@@ -440,7 +726,10 @@ fn draw_path_popup(frame: &mut Frame, app: &App) {
     // Truncate path if too long for popup
     let max_path_len = (popup_width.saturating_sub(4)) as usize;
     let display_path = if file_path.len() > max_path_len {
-        format!("…{}", &file_path[file_path.len().saturating_sub(max_path_len - 1)..])
+        format!(
+            "…{}",
+            &file_path[file_path.len().saturating_sub(max_path_len - 1)..]
+        )
     } else {
         file_path
     };

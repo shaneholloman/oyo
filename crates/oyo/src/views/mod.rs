@@ -117,19 +117,24 @@ fn should_strikethrough(phase: AnimationPhase, progress: f32, backward: bool) ->
 
 /// Render empty state message centered in area.
 /// Shows hint line only if viewport has enough height and width.
-fn render_empty_state(frame: &mut Frame, area: Rect, theme: &ResolvedTheme) {
+fn render_empty_state(frame: &mut Frame, area: Rect, theme: &ResolvedTheme, has_changes: bool) {
     // Fill entire area with background
     if let Some(bg) = theme.background {
         let bg_fill = Paragraph::new("").style(Style::default().bg(bg));
         frame.render_widget(bg_fill, area);
     }
 
+    let (primary_text, show_hint) = if has_changes {
+        ("No content at this step", true)
+    } else {
+        ("No changes in this file", false)
+    };
     let primary = Line::from(Span::styled(
-        "No content at this step",
+        primary_text,
         Style::default().fg(theme.text_muted),
     ));
 
-    let show_hint = area.height >= 2 && area.width >= 28;
+    let show_hint = show_hint && area.height >= 2 && area.width >= 28;
     let (lines, height) = if show_hint {
         let hint = Line::from(Span::styled(
             "j/k to step, h/l for hunks",
