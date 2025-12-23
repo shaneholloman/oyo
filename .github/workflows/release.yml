@@ -98,5 +98,5 @@ jobs:
           echo "- New version: ${{ steps.version.outputs.new }}" >> $GITHUB_STEP_SUMMARY
           echo "- Would commit, tag, and push v${{ steps.version.outputs.new }}" >> $GITHUB_STEP_SUMMARY
           echo "- Would publish oyo-core and oyo to crates.io" >> $GITHUB_STEP_SUMMARY
-          cargo publish -p oyo-core --dry-run
-          cargo publish -p oyo --dry-run
+          cargo publish -p oyo-core --dry-run --allow-dirty
+          cargo publish -p oyo --dry-run --allow-dirty
