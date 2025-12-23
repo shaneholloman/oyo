@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
-use oyo_core::{ChangeKind, LineKind, ViewSpan, ViewSpanKind};
+use oyo_core::{AnimationFrame, ChangeKind, LineKind, ViewSpan, ViewSpanKind};
 
 /// Width of the fixed line number gutter
 const GUTTER_WIDTH: u16 = 6; // "▶1234 " or " 1234 "
@@ -19,8 +19,10 @@ const GUTTER_WIDTH: u16 = 6; // "▶1234 " or " 1234 "
 pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_height = area.height as usize;
     app.ensure_active_visible_if_needed(visible_height);
-    let animation_frame = app.animation_frame();
-    let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
+    let view_lines = app
+        .multi_diff
+        .current_navigator()
+        .current_view_with_frame(AnimationFrame::Idle);
     let step_direction = app.multi_diff.current_step_direction();
     let (display_len, _) = crate::app::display_metrics(
         &view_lines,
@@ -46,8 +48,10 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let primary_marker = app.primary_marker.clone();
     let extent_marker = app.extent_marker.clone();
 
-    let animation_frame = app.animation_frame();
-    let view_lines = app.multi_diff.current_navigator().current_view_with_frame(animation_frame);
+    let view_lines = app
+        .multi_diff
+        .current_navigator()
+        .current_view_with_frame(AnimationFrame::Idle);
     let visible_height = area.height as usize;
     let visible_width = area.width.saturating_sub(GUTTER_WIDTH + 1) as usize; // +1 for border
     let debug_target = app.syntax_scope_target(&view_lines);
@@ -342,7 +346,56 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
             if !used_syntax {
-                for view_span in &view_line.spans {
+                let mut rebuilt_spans: Vec<ViewSpan> = Vec::new();
+                let spans = if matches!(
+                    view_line.kind,
+                    LineKind::Modified | LineKind::PendingModify
+                ) {
+                    if let Some(change) = app
+                        .multi_diff
+                        .current_navigator()
+                        .diff()
+                        .changes
+                        .get(view_line.change_id)
+                    {
+                        for span in &change.spans {
+                            match span.kind {
+                                ChangeKind::Equal => rebuilt_spans.push(ViewSpan {
+                                    text: span.text.clone(),
+                                    kind: ViewSpanKind::Equal,
+                                }),
+                                ChangeKind::Insert => rebuilt_spans.push(ViewSpan {
+                                    text: span.text.clone(),
+                                    kind: if view_line.is_active {
+                                        ViewSpanKind::PendingInsert
+                                    } else {
+                                        ViewSpanKind::Inserted
+                                    },
+                                }),
+                                ChangeKind::Replace => rebuilt_spans.push(ViewSpan {
+                                    text: span
+                                        .new_text
+                                        .clone()
+                                        .unwrap_or_else(|| span.text.clone()),
+                                    kind: if view_line.is_active {
+                                        ViewSpanKind::PendingInsert
+                                    } else {
+                                        ViewSpanKind::Inserted
+                                    },
+                                }),
+                                ChangeKind::Delete => {}
+                            }
+                        }
+                    }
+                    if rebuilt_spans.is_empty() {
+                        &view_line.spans
+                    } else {
+                        &rebuilt_spans
+                    }
+                } else {
+                    &view_line.spans
+                };
+                for view_span in spans {
                     let style =
                         get_new_span_style(view_span.kind, view_line.kind, view_line.is_active, app);
                     content_spans.push(Span::styled(view_span.text.clone(), style));
@@ -424,15 +477,26 @@ fn get_old_span_style(kind: ViewSpanKind, _line_kind: LineKind, is_active: bool,
     match kind {
         ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Deleted => {
-            // Completed deletion: base color with optional strikethrough
-            let mut style = super::delete_style(
-                AnimationPhase::Idle,
-                0.0,
-                false,
-                false,
-                theme.delete_base(),
-                theme.diff_context,
-            );
+            // Active delete should fade from context to delete color.
+            let mut style = if is_active {
+                super::delete_style(
+                    app.animation_phase,
+                    app.animation_progress,
+                    app.is_backward_animation(),
+                    app.strikethrough_deletions,
+                    theme.delete_base(),
+                    theme.diff_context,
+                )
+            } else {
+                super::delete_style(
+                    AnimationPhase::Idle,
+                    0.0,
+                    false,
+                    false,
+                    theme.delete_base(),
+                    theme.delete_dim(),
+                )
+            };
             if app.strikethrough_deletions {
                 style = style.add_modifier(Modifier::CROSSED_OUT);
             }
@@ -460,7 +524,7 @@ fn get_old_span_style(kind: ViewSpanKind, _line_kind: LineKind, is_active: bool,
                     false,
                     false,
                     theme.delete_base(),
-                    theme.diff_context,
+                    theme.delete_dim(),
                 );
                 if app.strikethrough_deletions {
                     style = style.add_modifier(Modifier::CROSSED_OUT);
@@ -485,7 +549,7 @@ fn get_new_span_style(kind: ViewSpanKind, _line_kind: LineKind, is_active: bool,
                 0.0,
                 false,
                 theme.insert_base(),
-                theme.diff_context,
+                theme.insert_dim(),
             )
         }
         ViewSpanKind::Deleted => {
@@ -499,7 +563,7 @@ fn get_new_span_style(kind: ViewSpanKind, _line_kind: LineKind, is_active: bool,
                     app.animation_progress,
                     app.is_backward_animation(),
                     theme.insert_base(),
-                    theme.diff_context,
+                    theme.insert_dim(),
                 )
             } else {
                 // Non-active pending insert: show dim
