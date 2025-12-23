@@ -1,7 +1,7 @@
 //! Application state and logic
 
 use crate::color;
-use crate::config::{ResolvedTheme, SyntaxMode};
+use crate::config::{FileCountMode, ResolvedTheme, SyntaxMode};
 use crate::syntax::{SyntaxCache, SyntaxEngine, SyntaxSide};
 use oyo_core::{
     AnimationFrame, Change, ChangeKind, LineKind, MultiFileDiff, StepDirection, StepState, ViewLine,
@@ -96,6 +96,8 @@ pub struct App {
     pub file_panel_visible: bool,
     /// File list scroll offset
     pub file_list_scroll: usize,
+    /// When to show per-file +/- counts in the file panel
+    pub file_count_mode: FileCountMode,
     /// File list filter text
     pub file_filter: String,
     /// True when filter input is active
@@ -246,6 +248,7 @@ impl App {
             file_list_focused: false,
             file_panel_visible: true,
             file_list_scroll: 0,
+            file_count_mode: FileCountMode::Active,
             file_filter: String::new(),
             file_filter_active: false,
             animation_enabled: false,

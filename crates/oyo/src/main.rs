@@ -423,6 +423,7 @@ fn main() -> Result<()> {
     app.animation_duration = config.playback.animation_duration;
     app.delay_modified_animation = config.playback.delay_modified_animation;
     app.file_panel_visible = config.files.panel_visible;
+    app.file_count_mode = config.files.counts;
     app.auto_center = config.ui.auto_center;
     app.line_wrap = config.ui.line_wrap;
     app.scrollbar_visible = config.ui.scrollbar;

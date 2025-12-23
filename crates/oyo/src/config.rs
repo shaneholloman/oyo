@@ -32,10 +32,11 @@
 //! animation = false
 //! auto_step_on_enter = true
 //! auto_step_blank_files = true
-//! delay_modified_animation = 250
+//! delay_modified_animation = 200
 //!
 //! [files]
 //! panel_visible = true
+//! counts = "active"
 //! ```
 
 use crate::color::{self, AnimationGradient};
@@ -593,7 +594,7 @@ impl Default for PlaybackConfig {
             animation_duration: 150,
             auto_step_on_enter: true,
             auto_step_blank_files: true,
-            delay_modified_animation: 250,
+            delay_modified_animation: 200,
         }
     }
 }
@@ -604,13 +605,32 @@ impl Default for PlaybackConfig {
 pub struct FilesConfig {
     /// Show file panel by default in multi-file mode
     pub panel_visible: bool,
+    /// When to show per-file +/- counts in the file panel
+    pub counts: FileCountMode,
 }
 
 impl Default for FilesConfig {
     fn default() -> Self {
         Self {
             panel_visible: true,
+            counts: FileCountMode::Active,
         }
+    }
+}
+
+/// File list counts display behavior
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum FileCountMode {
+    Active,
+    Focused,
+    All,
+    Off,
+}
+
+impl Default for FileCountMode {
+    fn default() -> Self {
+        FileCountMode::Active
     }
 }
 

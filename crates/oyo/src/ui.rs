@@ -487,13 +487,39 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
             None
         };
 
+        let show_for_row = match app.file_count_mode {
+            crate::config::FileCountMode::Active => is_selected,
+            crate::config::FileCountMode::Focused => app.file_list_focused,
+            crate::config::FileCountMode::All => true,
+            crate::config::FileCountMode::Off => false,
+        };
+        let show_signs = show_for_row && (file.insertions > 0 || file.deletions > 0);
+        let insert_text = if show_signs {
+            format!("+{}", file.insertions)
+        } else {
+            String::new()
+        };
+        let delete_text = if show_signs {
+            format!("-{}", file.deletions)
+        } else {
+            String::new()
+        };
+        let signs_len = if show_signs {
+            1 + insert_text.len() + 1 + delete_text.len()
+        } else {
+            0
+        };
+
         // Truncate filename to fit
         let file_name = file
             .display_name
             .rsplit('/')
             .next()
             .unwrap_or(&file.display_name);
-        let max_name_len = list_area.width.saturating_sub(4).max(1) as usize;
+        let max_name_len = list_area
+            .width
+            .saturating_sub(4 + signs_len as u16)
+            .max(1) as usize;
         let name = if file_name.len() > max_name_len {
             if max_name_len == 1 {
                 "…".to_string()
@@ -529,13 +555,38 @@ fn draw_file_list(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let marker = if is_selected { "•" } else { " " };
 
-        let line = Line::from(vec![
+        let mut line_spans = vec![
             Span::styled(marker, marker_style),
             Span::raw(" "),
             Span::styled("■", icon_style),
             Span::raw(" "),
             Span::styled(name, name_style),
-        ]);
+        ];
+
+        if show_signs {
+            line_spans.push(Span::raw(" "));
+            let sign_style = if app.file_list_focused && is_selected {
+                Style::default().fg(app.theme.success)
+            } else {
+                Style::default().fg(app.theme.text_muted)
+            };
+            let delete_style = if app.file_list_focused && is_selected {
+                Style::default().fg(app.theme.error)
+            } else {
+                Style::default().fg(app.theme.text_muted)
+            };
+            line_spans.push(Span::styled(
+                insert_text,
+                sign_style,
+            ));
+            line_spans.push(Span::raw(" "));
+            line_spans.push(Span::styled(
+                delete_text,
+                delete_style,
+            ));
+        }
+
+        let line = Line::from(line_spans);
 
         items.push(ListItem::new(line));
         remaining -= 1;
