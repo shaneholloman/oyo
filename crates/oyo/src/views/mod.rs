@@ -33,6 +33,35 @@ pub(crate) fn spans_width(spans: &[Span]) -> usize {
         .sum()
 }
 
+pub(crate) fn line_is_italic(spans: &[Span]) -> bool {
+    let mut has_text = false;
+    for span in spans {
+        if span.content.trim().is_empty() {
+            continue;
+        }
+        has_text = true;
+        if !span.style.add_modifier.contains(Modifier::ITALIC) {
+            return false;
+        }
+    }
+    has_text
+}
+
+pub(crate) fn apply_italic_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    spans
+        .into_iter()
+        .map(|span| Span::styled(span.content, span.style.add_modifier(Modifier::ITALIC)))
+        .collect()
+}
+
+pub(crate) fn boost_inline_bg(app: &App, base_bg: Option<Color>, accent: Color) -> Option<Color> {
+    if !app.diff_bg {
+        return base_bg;
+    }
+    let base = base_bg?;
+    color::blend_colors(base, accent, 0.10).or(Some(base))
+}
+
 pub(crate) fn pending_tail_text(count: usize) -> String {
     format!("... +{} more", count)
 }
@@ -54,7 +83,14 @@ pub(crate) fn apply_line_bg(
 ) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = spans
         .into_iter()
-        .map(|span| Span::styled(span.content, span.style.bg(bg)))
+        .map(|span| {
+            let style = if span.style.bg.is_some() {
+                span.style
+            } else {
+                span.style.bg(bg)
+            };
+            Span::styled(span.content, style)
+        })
         .collect();
 
     if !line_wrap {
@@ -74,7 +110,10 @@ pub(crate) fn apply_spans_bg(spans: Vec<Span<'static>>, bg: Color) -> Vec<Span<'
         .collect()
 }
 
-pub(crate) fn clear_leading_ws_bg(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+pub(crate) fn clear_leading_ws_bg(
+    spans: Vec<Span<'static>>,
+    clear_when_fg: Option<Color>,
+) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut at_line_start = true;
 
@@ -105,10 +144,77 @@ pub(crate) fn clear_leading_ws_bg(spans: Vec<Span<'static>>) -> Vec<Span<'static
         }
 
         let (ws, rest) = text.split_at(ws_len);
+        let should_clear = match clear_when_fg {
+            Some(fg) => span.style.fg == Some(fg),
+            None => true,
+        };
         if !ws.is_empty() {
-            let ws_style = Style {
-                bg: None,
-                ..span.style
+            let ws_style = if should_clear {
+                Style {
+                    bg: None,
+                    ..span.style
+                }
+            } else {
+                span.style
+            };
+            out.push(Span::styled(ws.to_string(), ws_style));
+        }
+        if !rest.is_empty() {
+            out.push(Span::styled(rest.to_string(), span.style));
+            at_line_start = false;
+        }
+    }
+
+    out
+}
+
+pub(crate) fn replace_leading_ws_bg(
+    spans: Vec<Span<'static>>,
+    clear_when_fg: Option<Color>,
+    replacement_bg: Option<Color>,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut at_line_start = true;
+
+    for span in spans {
+        if !at_line_start {
+            out.push(span);
+            continue;
+        }
+
+        let text = span.content.as_ref();
+        if text.is_empty() {
+            continue;
+        }
+
+        let mut ws_len = 0usize;
+        for (idx, ch) in text.char_indices() {
+            if ch.is_whitespace() {
+                ws_len = idx + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        if ws_len == 0 {
+            out.push(span);
+            at_line_start = false;
+            continue;
+        }
+
+        let (ws, rest) = text.split_at(ws_len);
+        let should_clear = match clear_when_fg {
+            Some(fg) => span.style.fg == Some(fg),
+            None => true,
+        };
+        if !ws.is_empty() {
+            let ws_style = if should_clear {
+                Style {
+                    bg: replacement_bg,
+                    ..span.style
+                }
+            } else {
+                span.style
             };
             out.push(Span::styled(ws.to_string(), ws_style));
         }
@@ -385,9 +491,9 @@ pub(crate) fn truncate_text(text: &str, max_width: usize) -> String {
     format!("{}...", &text[..suffix_len])
 }
 
-use crate::app::AnimationPhase;
+use crate::app::{AnimationPhase, App};
 use crate::color;
-use crate::config::ResolvedTheme;
+use crate::config::{DiffExtentMarkerMode, DiffExtentMarkerScope, ResolvedTheme};
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
@@ -395,6 +501,38 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+
+pub(crate) fn extent_marker_style(
+    app: &App,
+    kind: LineKind,
+    has_changes: bool,
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+) -> Style {
+    let color = match app.diff_extent_marker {
+        DiffExtentMarkerMode::Neutral => app.theme.diff_ext_marker,
+        DiffExtentMarkerMode::Diff => match app.diff_extent_marker_scope {
+            DiffExtentMarkerScope::Progress => match kind {
+                LineKind::Inserted | LineKind::PendingInsert => app.theme.insert_base(),
+                LineKind::Deleted | LineKind::PendingDelete => app.theme.delete_base(),
+                LineKind::Modified | LineKind::PendingModify => app.theme.modify_base(),
+                LineKind::Context => app.theme.diff_ext_marker,
+            },
+            DiffExtentMarkerScope::Hunk => {
+                if !has_changes {
+                    app.theme.diff_ext_marker
+                } else if old_line.is_none() {
+                    app.theme.insert_base()
+                } else if new_line.is_none() {
+                    app.theme.delete_base()
+                } else {
+                    app.theme.modify_base()
+                }
+            }
+        },
+    };
+    Style::default().fg(color)
+}
 
 // ============================================================================
 // HSL-based animation styles (configurable colors, smooth gradients)

@@ -53,6 +53,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
             app.animation_phase,
             app.scroll_offset,
             step_direction,
+            app.split_align_lines,
         );
         app.clamp_scroll(len, visible_height, app.allow_overscroll());
         display_len = len;
@@ -221,19 +222,24 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         } else if view_line.show_hunk_extent {
             (
                 extent_marker.as_str(),
-                Style::default().fg(app.theme.diff_ext_marker),
+                super::extent_marker_style(
+                    app,
+                    view_line.kind,
+                    view_line.has_changes,
+                    view_line.old_line,
+                    view_line.new_line,
+                ),
             )
         } else {
             (" ", Style::default())
         };
 
         // Build gutter line (fixed, no horizontal scroll)
-        // Matches single-pane: marker(1) + line_num(4) + space(1) + blank_sign(1) + space(1) = 8
         let gutter_spans = vec![
             Span::styled(active_marker, active_style),
             Span::styled(line_num_str, line_num_style),
             Span::styled(" ", Style::default()),
-            Span::styled(" ", Style::default()), // blank sign column (matches single-pane)
+            Span::styled(" ", Style::default()),
             Span::styled(" ", Style::default()),
         ];
         // Evolution view ignores diff background modes to keep the morph view clean.

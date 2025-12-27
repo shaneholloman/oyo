@@ -2,8 +2,8 @@
 
 use crate::color;
 use crate::config::{
-    DiffBackgroundMode, DiffForegroundMode, FileCountMode, ModifiedStepMode, ResolvedTheme,
-    SyntaxMode,
+    DiffExtentMarkerMode, DiffExtentMarkerScope, DiffForegroundMode, DiffHighlightMode,
+    FileCountMode, ModifiedStepMode, ResolvedTheme, SyntaxMode,
 };
 use crate::syntax::{SyntaxCache, SyntaxEngine, SyntaxSide};
 use oyo_core::{
@@ -137,6 +137,8 @@ pub struct App {
     pub git_branch: Option<String>,
     /// Auto-center on active change after stepping (like vim's zz)
     pub auto_center: bool,
+    /// Show top bar in diff view
+    pub topbar: bool,
     /// Animation duration in milliseconds (how long fade effects take)
     pub animation_duration: u64,
     /// Pending count for vim-style commands (e.g., 10j = scroll down 10 lines)
@@ -163,6 +165,8 @@ pub struct App {
     pub scrollbar_visible: bool,
     /// Show strikethrough on deleted text
     pub strikethrough_deletions: bool,
+    /// Show +/- sign column in the gutter (single/evolution)
+    pub gutter_signs: bool,
     /// Whether user has manually toggled the file panel (overrides auto-hide)
     pub file_panel_manually_set: bool,
     /// Whether to show the file path popup (Ctrl+G)
@@ -191,12 +195,22 @@ pub struct App {
     pub theme_is_light: bool,
     /// Whether stepping is enabled (false = no-step diff view)
     pub stepping: bool,
-    /// Diff background rendering mode
-    pub diff_bg: DiffBackgroundMode,
+    /// Diff background (full-line) toggle
+    pub diff_bg: bool,
     /// Diff foreground rendering mode
     pub diff_fg: DiffForegroundMode,
+    /// Inline diff highlight mode
+    pub diff_highlight: DiffHighlightMode,
+    /// Diff extent marker color mode
+    pub diff_extent_marker: DiffExtentMarkerMode,
+    /// Diff extent marker scope
+    pub diff_extent_marker_scope: DiffExtentMarkerScope,
     /// Single-pane modified line render mode while stepping
     pub single_modified_step_mode: ModifiedStepMode,
+    /// Keep split panes vertically aligned by inserting blank rows
+    pub split_align_lines: bool,
+    /// Fill character for aligned blank rows in split view
+    pub split_align_fill: String,
     /// Syntax scope in evolution view
     pub evo_syntax: crate::config::EvoSyntaxMode,
     /// Syntax highlighting mode
@@ -337,6 +351,7 @@ impl App {
             help_max_scroll: 0,
             git_branch,
             auto_center: true,
+            topbar: true,
             animation_duration: 150,
             pending_count: None,
             pending_g_prefix: false,
@@ -350,6 +365,7 @@ impl App {
             last_wrap_active_idx: None,
             scrollbar_visible: false,
             strikethrough_deletions: false,
+            gutter_signs: true,
             file_panel_manually_set: false,
             show_path_popup: false,
             file_panel_auto_hidden: false,
@@ -364,9 +380,14 @@ impl App {
             theme: ResolvedTheme::default(),
             theme_is_light: false,
             stepping: true,
-            diff_bg: DiffBackgroundMode::None,
+            diff_bg: false,
             diff_fg: DiffForegroundMode::Theme,
+            diff_highlight: DiffHighlightMode::Text,
+            diff_extent_marker: DiffExtentMarkerMode::Neutral,
+            diff_extent_marker_scope: DiffExtentMarkerScope::Progress,
             single_modified_step_mode: ModifiedStepMode::Mixed,
+            split_align_lines: false,
+            split_align_fill: "╱".to_string(),
             evo_syntax: crate::config::EvoSyntaxMode::Context,
             syntax_mode: SyntaxMode::On,
             syntax_theme: "ansi".to_string(),
@@ -1060,6 +1081,7 @@ impl App {
             self.animation_phase,
             self.scroll_offset,
             step_direction,
+            self.split_align_lines,
         );
         if display_len == 0 {
             return None;
@@ -2889,6 +2911,7 @@ impl App {
             self.animation_phase,
             self.scroll_offset,
             step_direction,
+            self.split_align_lines,
         );
 
         if let Some(idx) = display_idx {
@@ -3030,6 +3053,7 @@ impl App {
             self.animation_phase,
             self.scroll_offset,
             step_direction,
+            self.split_align_lines,
         );
 
         self.center_with_display_idx(viewport_height, display_len, display_idx);
@@ -3340,6 +3364,7 @@ pub fn display_metrics(
     animation_phase: AnimationPhase,
     scroll_offset: usize,
     step_direction: StepDirection,
+    split_align_lines: bool,
 ) -> (usize, Option<usize>) {
     match view_mode {
         ViewMode::SinglePane => {
@@ -3350,7 +3375,9 @@ pub fn display_metrics(
             (view.len(), idx)
         }
         ViewMode::Evolution => evolution_display_metrics(view, animation_phase),
-        ViewMode::Split => split_display_metrics(view, scroll_offset, step_direction),
+        ViewMode::Split => {
+            split_display_metrics(view, scroll_offset, step_direction, split_align_lines)
+        }
     }
 }
 
@@ -3395,6 +3422,7 @@ fn split_display_metrics(
     view: &[ViewLine],
     scroll_offset: usize,
     step_direction: StepDirection,
+    split_align_lines: bool,
 ) -> (usize, Option<usize>) {
     let mut old_count = 0usize;
     let mut new_count = 0usize;
@@ -3405,7 +3433,10 @@ fn split_display_metrics(
     let mut new_fallback_idx: Option<usize> = None;
 
     for line in view {
-        if line.old_line.is_some() {
+        let old_present = line.old_line.is_some();
+        let new_present = line.new_line.is_some()
+            && !matches!(line.kind, LineKind::Deleted | LineKind::PendingDelete);
+        if old_present || (split_align_lines && new_present) {
             if line.is_primary_active {
                 old_primary_idx = Some(old_count);
             } else if line.is_active && old_fallback_idx.is_none() {
@@ -3413,7 +3444,7 @@ fn split_display_metrics(
             }
             old_count += 1;
         }
-        if line.new_line.is_some() {
+        if new_present || (split_align_lines && old_present) {
             if line.is_primary_active {
                 new_primary_idx = Some(new_count);
             } else if line.is_active && new_fallback_idx.is_none() {
@@ -3566,7 +3597,7 @@ mod tests {
         ];
         // scroll_offset=0: old side's active at idx 0 is closer than new side's primary at idx 2
         // But primary must dominate, so result should be new side's idx 2
-        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward, false);
         assert_eq!(len, 3); // max(2 old, 3 new)
         assert_eq!(idx, Some(2)); // new_primary_idx, not old_fallback_idx
     }
@@ -3582,14 +3613,14 @@ mod tests {
         ];
         // Both old and new primary at idx 2
         // scroll_offset=0: both equally close (dist=2), tie-break by direction
-        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Forward, false);
         assert_eq!(idx, Some(2)); // new side wins on Forward
 
-        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Backward);
+        let (_, idx) = split_display_metrics(&view, 0, StepDirection::Backward, false);
         assert_eq!(idx, Some(2)); // old side wins on Backward (same value here)
 
         // scroll_offset=10: both at dist=8, tie-break applies
-        let (_, idx) = split_display_metrics(&view, 10, StepDirection::Forward);
+        let (_, idx) = split_display_metrics(&view, 10, StepDirection::Forward, false);
         assert_eq!(idx, Some(2));
     }
 
@@ -3601,7 +3632,7 @@ mod tests {
             make_view_line(LineKind::Context, Some(2), Some(2), true, false), // active, not primary
             make_view_line(LineKind::Context, Some(3), Some(3), false, false),
         ];
-        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward);
+        let (len, idx) = split_display_metrics(&view, 0, StepDirection::Forward, false);
         assert_eq!(len, 3);
         assert_eq!(idx, Some(1)); // fallback to first active
     }

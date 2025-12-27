@@ -6,11 +6,16 @@
 //! ```toml
 //! [ui]
 //! zen = false
+//! topbar = true
 //! auto_center = true
 //! view_mode = "single"
 //! line_wrap = false
 //! scrollbar = false
 //! strikethrough_deletions = false
+//! gutter_signs = true
+//! # [ui.split]
+//! # align_lines = false
+//! # align_fill = "╱"
 //! primary_marker = "▶"
 //! primary_marker_right = "◀"
 //! extent_marker = "▌"
@@ -525,6 +530,8 @@ fn merge_theme_tokens(base: &mut ThemeTokens, overlay: &ThemeTokens) {
 pub struct UiConfig {
     /// Start in zen mode (minimal UI)
     pub zen: bool,
+    /// Show top bar in diff view
+    pub topbar: bool,
     /// Auto-center on active change after stepping (like vim's zz)
     pub auto_center: bool,
     /// Default view mode: "single", "split", or "evolution"
@@ -535,10 +542,14 @@ pub struct UiConfig {
     pub scrollbar: bool,
     /// Show strikethrough on deleted text
     pub strikethrough_deletions: bool,
+    /// Show +/- sign column in the gutter (single/evolution)
+    pub gutter_signs: bool,
     /// Syntax highlighting configuration
     pub syntax: SyntaxConfig,
     /// Single-pane view settings
     pub single: SingleViewConfig,
+    /// Split view settings
+    pub split: SplitViewConfig,
     /// Evolution view settings
     pub evo: EvoViewConfig,
     /// Diff styling settings
@@ -561,13 +572,16 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             zen: false,
+            topbar: true,
             auto_center: true,
             view_mode: None,
             line_wrap: false,
             scrollbar: false,
             strikethrough_deletions: false,
+            gutter_signs: true,
             syntax: SyntaxConfig::default(),
             single: SingleViewConfig::default(),
+            split: SplitViewConfig::default(),
             evo: EvoViewConfig::default(),
             diff: DiffConfig::default(),
             stepping: true,
@@ -576,6 +590,25 @@ impl Default for UiConfig {
             extent_marker: "▌".to_string(),
             extent_marker_right: None,
             theme: ThemeConfig::default(),
+        }
+    }
+}
+
+/// Split view configuration
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct SplitViewConfig {
+    /// Insert blank rows for missing lines to keep panes vertically aligned
+    pub align_lines: bool,
+    /// Fill character for aligned blank rows (empty = no marker)
+    pub align_fill: String,
+}
+
+impl Default for SplitViewConfig {
+    fn default() -> Self {
+        Self {
+            align_lines: false,
+            align_fill: "╱".to_string(),
         }
     }
 }
@@ -616,12 +649,21 @@ impl Default for EvoViewConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct DiffConfig {
-    /// Diff background mode: "none", "text", or "line"
+    /// Diff background (full-line) toggle
     #[serde(default = "diff_bg_default")]
-    pub bg: DiffBackgroundMode,
+    pub bg: bool,
     /// Diff foreground mode: "theme" or "syntax"
     #[serde(default = "diff_fg_default")]
     pub fg: DiffForegroundMode,
+    /// Inline diff highlight mode: "word", "text", or "none"
+    #[serde(default = "diff_highlight_default")]
+    pub highlight: DiffHighlightMode,
+    /// Extent marker color mode: "neutral" or "diff"
+    #[serde(default = "diff_extent_marker_default")]
+    pub extent_marker: DiffExtentMarkerMode,
+    /// Extent marker scope: "progress" or "hunk"
+    #[serde(default = "diff_extent_marker_scope_default")]
+    pub extent_marker_scope: DiffExtentMarkerScope,
 }
 
 impl Default for DiffConfig {
@@ -629,18 +671,32 @@ impl Default for DiffConfig {
         Self {
             bg: diff_bg_default(),
             fg: diff_fg_default(),
+            highlight: diff_highlight_default(),
+            extent_marker: diff_extent_marker_default(),
+            extent_marker_scope: diff_extent_marker_scope_default(),
         }
     }
 }
 
-fn diff_bg_default() -> DiffBackgroundMode {
-    DiffBackgroundMode::Text
+fn diff_bg_default() -> bool {
+    false
 }
 
 fn diff_fg_default() -> DiffForegroundMode {
     DiffForegroundMode::Theme
 }
 
+fn diff_highlight_default() -> DiffHighlightMode {
+    DiffHighlightMode::Text
+}
+
+fn diff_extent_marker_default() -> DiffExtentMarkerMode {
+    DiffExtentMarkerMode::Neutral
+}
+
+fn diff_extent_marker_scope_default() -> DiffExtentMarkerScope {
+    DiffExtentMarkerScope::Progress
+}
 /// Evolution view syntax scope
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -661,17 +717,6 @@ pub enum ModifiedStepMode {
     Modified,
 }
 
-/// Diff background rendering mode
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffBackgroundMode {
-    #[serde(alias = "off")]
-    None,
-    #[default]
-    Text,
-    Line,
-}
-
 /// Diff foreground rendering mode
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -679,6 +724,34 @@ pub enum DiffForegroundMode {
     #[default]
     Theme,
     Syntax,
+}
+
+/// Inline diff highlight mode
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffHighlightMode {
+    #[default]
+    Text,
+    Word,
+    None,
+}
+
+/// Extent marker color mode
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffExtentMarkerMode {
+    #[default]
+    Neutral,
+    Diff,
+}
+
+/// Extent marker scope
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffExtentMarkerScope {
+    #[default]
+    Progress,
+    Hunk,
 }
 
 /// Syntax highlighting mode

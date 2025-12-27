@@ -105,11 +105,24 @@ Inline word-level diffs remain visible after stepping through a modified line.
 
 Applies to single/split only (ignored in evolution):
 
-- `none`: no diff background.
-- `text`: background on changed spans only (no leading whitespace, no gutter,
-  no cursor/ext markers).
-- `line`: full-line background including gutter (line numbers/signs), but
+- `false`: no full-line background.
+- `true`: full-line background including gutter (line numbers/signs), but
   cursor/ext markers do not take background.
+
+### Inline highlight (diff.highlight)
+
+Applies to single/split only (ignored in evolution):
+
+- `text`: highlight changed spans including leading whitespace.
+- `word`: like `text`, but leading whitespace is not highlighted.
+- `none`: disable inline highlights.
+
+### Extent markers
+
+- `ui.diff.extent_marker = "neutral"`: hunk extent markers use the neutral marker color.
+- `ui.diff.extent_marker = "diff"`: hunk extent markers take the line’s diff color.
+- `ui.diff.extent_marker_scope = "progress"`: only already-applied change lines use diff colors.
+- `ui.diff.extent_marker_scope = "hunk"`: all lines in the current hunk use diff colors.
 
 ## Line Wrap
 
@@ -121,8 +134,11 @@ Applies to single/split only (ignored in evolution):
 ```toml
 [ui]
 [ui.diff]
-bg = "text"           # none | text | line
+bg = false            # true | false
 fg = "theme"          # theme | syntax
+highlight = "text"    # text | word | none
+extent_marker = "neutral" # neutral | diff
+extent_marker_scope = "progress" # progress | hunk
 
 [ui.evo]
 syntax = "context"    # context | full

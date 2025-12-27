@@ -204,14 +204,22 @@ Create a config file at `~/.config/oyo/config.toml`:
 ```toml
 [ui]
 auto_center = true          # Auto-center on active change (default: true)
+topbar = true               # Show top bar in diff view (default: true)
 view_mode = "single"        # Default: "single", "split", or "evolution"
 line_wrap = false           # Wrap long lines (default: false, uses horizontal scroll)
 scrollbar = false           # Show scrollbar (default: false)
 strikethrough_deletions = false # Show strikethrough on deleted text
+gutter_signs = true         # Show +/- sign column (single/evolution)
 stepping = true             # Enable stepping (false = no-step mode)
 # [ui.diff]
-# bg = "none"               # "none", "text", or "line"
+# bg = false                # Full-line diff background (true/false)
 # fg = "theme"              # "theme" or "syntax"
+# highlight = "text"        # "text" | "word" | "none"
+# extent_marker = "neutral" # "neutral" or "diff"
+# extent_marker_scope = "progress" # "progress" or "hunk"
+# [ui.split]
+# align_lines = false       # Insert blanks to keep split panes aligned
+# align_fill = "╱"          # Fill character for aligned blanks (empty = no marker)
 # [ui.evo]
 # syntax = "context"         # "context" (non-diff only) or "full" (diff + context)
 # Syntax highlighting:

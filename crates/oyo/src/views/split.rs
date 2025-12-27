@@ -6,14 +6,15 @@ use super::{
     truncate_text, wrap_count_for_spans, wrap_count_for_text, TAB_WIDTH,
 };
 use crate::app::{AnimationPhase, App};
-use crate::config::{DiffBackgroundMode, DiffForegroundMode};
+use crate::color;
+use crate::config::{DiffForegroundMode, DiffHighlightMode};
 use crate::syntax::SyntaxSide;
 use oyo_core::{
     AnimationFrame, ChangeKind, LineKind, StepDirection, ViewLine, ViewSpan, ViewSpanKind,
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
@@ -31,6 +32,71 @@ fn split_new_bg_kind(kind: LineKind) -> LineKind {
         LineKind::Modified | LineKind::PendingModify => LineKind::Inserted,
         _ => kind,
     }
+}
+
+fn line_num_style_for_kind(kind: LineKind, app: &App) -> Style {
+    let insert_base = color::gradient_color(&app.theme.insert, 0.5);
+    let delete_base = color::gradient_color(&app.theme.delete, 0.5);
+    let modify_base = color::gradient_color(&app.theme.modify, 0.5);
+    match kind {
+        LineKind::Inserted | LineKind::PendingInsert => {
+            Style::default().fg(Color::Rgb(insert_base.r, insert_base.g, insert_base.b))
+        }
+        LineKind::Deleted | LineKind::PendingDelete => {
+            Style::default().fg(Color::Rgb(delete_base.r, delete_base.g, delete_base.b))
+        }
+        LineKind::Modified | LineKind::PendingModify => {
+            Style::default().fg(Color::Rgb(modify_base.r, modify_base.g, modify_base.b))
+        }
+        LineKind::Context => Style::default().fg(app.theme.diff_line_number),
+    }
+}
+
+fn align_fill_span(app: &App, width: usize) -> Span<'static> {
+    if width == 0 || app.split_align_fill.is_empty() {
+        return Span::raw("");
+    }
+    let full_len = if app.line_wrap {
+        width
+    } else {
+        width.saturating_add(app.horizontal_scroll)
+    };
+    let mut out = String::with_capacity(full_len);
+    for ch in app.split_align_fill.chars().cycle().take(full_len) {
+        out.push(ch);
+    }
+    let text = if app.line_wrap {
+        out
+    } else {
+        out.chars()
+            .skip(app.horizontal_scroll)
+            .take(width)
+            .collect()
+    };
+    let mut fg = color::dim_color(app.theme.text_muted);
+    if let Some(bg) = app.theme.background {
+        if let Some(blended) = color::blend_colors(bg, fg, 0.5) {
+            fg = blended;
+        }
+    }
+    Span::styled(text, Style::default().fg(fg).add_modifier(Modifier::DIM))
+}
+
+fn align_fill_gutter_span(app: &App, width: usize) -> Span<'static> {
+    if width == 0 || app.split_align_fill.is_empty() {
+        return Span::raw(" ".repeat(width));
+    }
+    let mut out = String::with_capacity(width);
+    for ch in app.split_align_fill.chars().cycle().take(width) {
+        out.push(ch);
+    }
+    let mut fg = color::dim_color(app.theme.text_muted);
+    if let Some(bg) = app.theme.background {
+        if let Some(blended) = color::blend_colors(bg, fg, 0.5) {
+            fg = blended;
+        }
+    }
+    Span::styled(out, Style::default().fg(fg).add_modifier(Modifier::DIM))
 }
 
 /// Width of the fixed line number gutter
@@ -76,6 +142,7 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
             new_width,
             app.scroll_offset,
             step_direction,
+            app.split_align_lines,
         );
         app.ensure_active_visible_if_needed_wrapped(visible_height, display_len, active_idx);
         app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
@@ -86,6 +153,7 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
             app.animation_phase,
             app.scroll_offset,
             step_direction,
+            app.split_align_lines,
         );
         app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
     }
@@ -157,19 +225,52 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut max_line_width: usize = 0;
 
     for view_line in view_lines.iter() {
-        if let Some(old_line_num) = view_line.old_line {
-            // When wrapping, we need all lines
-            if !app.line_wrap && line_idx < app.scroll_offset {
-                line_idx += 1;
-                continue;
-            }
-            if !app.line_wrap && gutter_lines.len() >= visible_height {
-                break;
-            }
+        let old_present = view_line.old_line.is_some();
+        let new_present = view_line.new_line.is_some()
+            && !matches!(view_line.kind, LineKind::Deleted | LineKind::PendingDelete);
+        if !(old_present || (app.split_align_lines && new_present)) {
+            continue;
+        }
 
+        // When wrapping, we need all lines
+        if !app.line_wrap && line_idx < app.scroll_offset {
+            line_idx += 1;
+            continue;
+        }
+        if !app.line_wrap && gutter_lines.len() >= visible_height {
+            break;
+        }
+
+        if !old_present {
+            let wrap_count = if app.line_wrap {
+                split_new_line_wrap_count(app, view_line, visible_width)
+            } else {
+                1
+            };
+            let fill_span = align_fill_span(app, visible_width);
+            let marker_fill = align_fill_gutter_span(app, 1);
+            let gutter_fill = align_fill_gutter_span(app, 4);
+            let sign_fill = align_fill_gutter_span(app, 1);
+            gutter_lines.push(Line::from(vec![marker_fill, gutter_fill, sign_fill]));
+            content_lines.push(Line::from(fill_span.clone()));
+            if app.line_wrap && wrap_count > 1 {
+                for _ in 1..wrap_count {
+                    let marker_fill = align_fill_gutter_span(app, 1);
+                    let gutter_fill = align_fill_gutter_span(app, 4);
+                    let sign_fill = align_fill_gutter_span(app, 1);
+                    gutter_lines.push(Line::from(vec![marker_fill, gutter_fill, sign_fill]));
+                    content_lines.push(Line::from(fill_span.clone()));
+                }
+            }
+            line_idx += 1;
+            continue;
+        }
+
+        if let Some(old_line_num) = view_line.old_line {
             let line_num_str = format!("{:4}", old_line_num);
             let bg_kind = split_old_bg_kind(view_line.kind);
-            let line_bg_gutter = if app.diff_bg == DiffBackgroundMode::Line {
+            let line_num_style = line_num_style_for_kind(bg_kind, app);
+            let line_bg_gutter = if app.diff_bg {
                 diff_line_bg(bg_kind, &app.theme)
             } else {
                 None
@@ -186,7 +287,13 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             } else if view_line.show_hunk_extent {
                 (
                     extent_marker.as_str(),
-                    Style::default().fg(app.theme.diff_ext_marker),
+                    super::extent_marker_style(
+                        app,
+                        view_line.kind,
+                        view_line.has_changes,
+                        view_line.old_line,
+                        view_line.new_line,
+                    ),
                 )
             } else {
                 (" ", Style::default())
@@ -195,10 +302,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             // Build gutter line
             let mut gutter_spans = vec![
                 Span::styled(active_marker, active_style),
-                Span::styled(
-                    line_num_str,
-                    Style::default().fg(app.theme.diff_line_number),
-                ),
+                Span::styled(line_num_str, line_num_style),
                 Span::styled(" ", Style::default()),
             ];
             if let Some(bg) = line_bg_gutter {
@@ -233,7 +337,13 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 preview_mode && view_line.hunk_index == Some(preview_hunk) && wants_diff_syntax;
             let preview_modified = in_preview_hunk
                 && matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
-            let can_use_diff_syntax = wants_diff_syntax;
+            let highlight_inline = matches!(
+                app.diff_highlight,
+                DiffHighlightMode::Text | DiffHighlightMode::Word
+            );
+            let modified_line =
+                matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
+            let can_use_diff_syntax = wants_diff_syntax && !modified_line;
             if app.syntax_enabled()
                 && !preview_modified
                 && !view_line.is_active_change
@@ -255,7 +365,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                     .contains(&view_line.change_id);
                 let show_inline = view_line.old_line.is_some()
                     && view_line.new_line.is_some()
-                    && (view_line.is_active || is_applied);
+                    && (view_line.is_active || is_applied || (highlight_inline && modified_line));
                 let spans = if show_inline {
                     if let Some(change) = app
                         .multi_diff
@@ -290,11 +400,18 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 };
 
                 for view_span in spans {
+                    let highlight_allowed =
+                        matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify)
+                            || !view_line.is_active
+                            || (view_line.is_active
+                                && !matches!(app.diff_highlight, DiffHighlightMode::None)
+                                && (!app.diff_bg || app.diff_fg == DiffForegroundMode::Theme));
                     let style = get_old_span_style(
                         view_span.kind,
                         view_line.kind,
                         view_line.is_active,
                         app,
+                        highlight_allowed,
                     );
                     // For deleted spans, don't strikethrough leading whitespace
                     if app.strikethrough_deletions
@@ -320,7 +437,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
 
-            let line_bg_line = if app.diff_bg == DiffBackgroundMode::Line {
+            let line_bg_line = if app.diff_bg {
                 diff_line_bg(bg_kind, &app.theme)
             } else {
                 None
@@ -329,14 +446,49 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 content_spans = apply_line_bg(content_spans, bg, visible_width, app.line_wrap);
             }
 
-            if app.diff_bg == DiffBackgroundMode::Text && used_syntax {
+            let highlight_allowed =
+                matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify)
+                    || !view_line.is_active
+                    || (view_line.is_active
+                        && !matches!(app.diff_highlight, DiffHighlightMode::None)
+                        && (!app.diff_bg || app.diff_fg == DiffForegroundMode::Theme));
+            if highlight_allowed
+                && !app.diff_bg
+                && matches!(
+                    app.diff_highlight,
+                    DiffHighlightMode::Text | DiffHighlightMode::Word
+                )
+                && used_syntax
+            {
                 if let Some(bg) = diff_line_bg(bg_kind, &app.theme) {
                     content_spans = apply_spans_bg(content_spans, bg);
                 }
             }
 
-            if app.diff_bg == DiffBackgroundMode::Text {
-                content_spans = clear_leading_ws_bg(content_spans);
+            if highlight_allowed {
+                if !app.diff_bg {
+                    if app.diff_highlight == DiffHighlightMode::Text {
+                        if !view_line.is_active {
+                            content_spans =
+                                clear_leading_ws_bg(content_spans, Some(app.theme.diff_context));
+                        }
+                    } else if app.diff_highlight == DiffHighlightMode::Word {
+                        content_spans = clear_leading_ws_bg(content_spans, None);
+                    }
+                } else if app.diff_highlight == DiffHighlightMode::Word {
+                    content_spans = super::replace_leading_ws_bg(content_spans, None, line_bg_line);
+                }
+            }
+
+            let mut italic_line = false;
+            if app.syntax_enabled() {
+                if used_syntax {
+                    italic_line = super::line_is_italic(&content_spans);
+                } else if let Some(spans) =
+                    app.syntax_spans_for_line(SyntaxSide::Old, Some(old_line_num))
+                {
+                    italic_line = super::line_is_italic(&spans);
+                }
             }
 
             let line_text = spans_to_text(&content_spans);
@@ -344,6 +496,9 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 && has_query
                 && line_text.to_ascii_lowercase().contains(&query);
             content_spans = app.highlight_search_spans(content_spans, &line_text, is_active_match);
+            if italic_line {
+                content_spans = super::apply_italic_spans(content_spans);
+            }
 
             content_spans = expand_tabs_in_spans(&content_spans, TAB_WIDTH);
 
@@ -358,7 +513,7 @@ fn render_old_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut display_spans = content_spans;
             if !app.line_wrap {
                 display_spans = slice_spans(&display_spans, app.horizontal_scroll, visible_width);
-                if app.diff_bg == DiffBackgroundMode::Line {
+                if app.diff_bg {
                     if let Some(bg) = diff_line_bg(bg_kind, &app.theme) {
                         display_spans = pad_spans_bg(display_spans, bg, visible_width);
                     }
@@ -537,24 +692,52 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut max_line_width: usize = 0;
 
     for view_line in view_lines.iter() {
+        let old_present = view_line.old_line.is_some();
+        let new_present = view_line.new_line.is_some()
+            && !matches!(view_line.kind, LineKind::Deleted | LineKind::PendingDelete);
+        if !(new_present || (app.split_align_lines && old_present)) {
+            continue;
+        }
+
+        // When wrapping, we need all lines
+        if !app.line_wrap && line_idx < app.scroll_offset {
+            line_idx += 1;
+            continue;
+        }
+        if !app.line_wrap && gutter_lines.len() >= visible_height {
+            break;
+        }
+
+        if !new_present {
+            let wrap_count = if app.line_wrap {
+                split_old_line_wrap_count(app, view_line, visible_width)
+            } else {
+                1
+            };
+            let fill_span = align_fill_span(app, visible_width);
+            let gutter_fill = align_fill_gutter_span(app, 4);
+            let sign_fill = align_fill_gutter_span(app, 1);
+            gutter_lines.push(Line::from(vec![gutter_fill, sign_fill]));
+            content_lines.push(Line::from(fill_span.clone()));
+            marker_lines.push(Line::from(Span::raw(" ")));
+            if app.line_wrap && wrap_count > 1 {
+                for _ in 1..wrap_count {
+                    let gutter_fill = align_fill_gutter_span(app, 4);
+                    let sign_fill = align_fill_gutter_span(app, 1);
+                    gutter_lines.push(Line::from(vec![gutter_fill, sign_fill]));
+                    content_lines.push(Line::from(fill_span.clone()));
+                    marker_lines.push(Line::from(Span::raw(" ")));
+                }
+            }
+            line_idx += 1;
+            continue;
+        }
+
         if let Some(new_line_num) = view_line.new_line {
-            // Skip lines that represent deletions (they don't exist in new file)
-            if matches!(view_line.kind, LineKind::Deleted | LineKind::PendingDelete) {
-                continue;
-            }
-
-            // When wrapping, we need all lines
-            if !app.line_wrap && line_idx < app.scroll_offset {
-                line_idx += 1;
-                continue;
-            }
-            if !app.line_wrap && gutter_lines.len() >= visible_height {
-                break;
-            }
-
             let line_num_str = format!("{:4}", new_line_num);
             let bg_kind = split_new_bg_kind(view_line.kind);
-            let line_bg_gutter = if app.diff_bg == DiffBackgroundMode::Line {
+            let line_num_style = line_num_style_for_kind(bg_kind, app);
+            let line_bg_gutter = if app.diff_bg {
                 diff_line_bg(bg_kind, &app.theme)
             } else {
                 None
@@ -571,7 +754,13 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             } else if view_line.show_hunk_extent {
                 (
                     extent_marker_right.as_str(),
-                    Style::default().fg(app.theme.diff_ext_marker),
+                    super::extent_marker_style(
+                        app,
+                        view_line.kind,
+                        view_line.has_changes,
+                        view_line.old_line,
+                        view_line.new_line,
+                    ),
                 )
             } else {
                 (" ", Style::default())
@@ -579,10 +768,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // Build gutter line
             let mut gutter_spans = vec![
-                Span::styled(
-                    line_num_str,
-                    Style::default().fg(app.theme.diff_line_number),
-                ),
+                Span::styled(line_num_str, line_num_style),
                 Span::styled(" ", Style::default()),
             ];
             if let Some(bg) = line_bg_gutter {
@@ -610,7 +796,13 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 preview_mode && view_line.hunk_index == Some(preview_hunk) && wants_diff_syntax;
             let preview_modified = in_preview_hunk
                 && matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
-            let can_use_diff_syntax = wants_diff_syntax;
+            let highlight_inline = matches!(
+                app.diff_highlight,
+                DiffHighlightMode::Text | DiffHighlightMode::Word
+            );
+            let modified_line =
+                matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
+            let can_use_diff_syntax = wants_diff_syntax && !modified_line;
             if app.syntax_enabled()
                 && !preview_modified
                 && !view_line.is_active_change
@@ -642,7 +834,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                     .contains(&view_line.change_id);
                 let show_inline = view_line.old_line.is_some()
                     && view_line.new_line.is_some()
-                    && (view_line.is_active || is_applied);
+                    && (view_line.is_active || is_applied || (highlight_inline && modified_line));
                 let spans = if show_inline {
                     if let Some(change) = app
                         .multi_diff
@@ -689,16 +881,23 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                     &view_line.spans
                 };
                 for view_span in spans {
+                    let highlight_allowed =
+                        matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify)
+                            || !view_line.is_active
+                            || (view_line.is_active
+                                && !matches!(app.diff_highlight, DiffHighlightMode::None)
+                                && (!app.diff_bg || app.diff_fg == DiffForegroundMode::Theme));
                     let style = get_new_span_style(
                         view_span.kind,
                         view_line.kind,
                         view_line.is_active,
                         app,
+                        highlight_allowed,
                     );
                     content_spans.push(Span::styled(view_span.text.clone(), style));
                 }
             }
-            let line_bg_line = if app.diff_bg == DiffBackgroundMode::Line {
+            let line_bg_line = if app.diff_bg {
                 diff_line_bg(bg_kind, &app.theme)
             } else {
                 None
@@ -707,14 +906,60 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 content_spans = apply_line_bg(content_spans, bg, visible_width, app.line_wrap);
             }
 
-            if app.diff_bg == DiffBackgroundMode::Text && used_syntax {
+            let highlight_allowed =
+                matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify)
+                    || !view_line.is_active
+                    || (view_line.is_active
+                        && !matches!(app.diff_highlight, DiffHighlightMode::None)
+                        && (!app.diff_bg || app.diff_fg == DiffForegroundMode::Theme));
+            if highlight_allowed
+                && !app.diff_bg
+                && matches!(
+                    app.diff_highlight,
+                    DiffHighlightMode::Text | DiffHighlightMode::Word
+                )
+                && used_syntax
+            {
                 if let Some(bg) = diff_line_bg(bg_kind, &app.theme) {
                     content_spans = apply_spans_bg(content_spans, bg);
                 }
             }
 
-            if app.diff_bg == DiffBackgroundMode::Text {
-                content_spans = clear_leading_ws_bg(content_spans);
+            if highlight_allowed {
+                if !app.diff_bg {
+                    if app.diff_highlight == DiffHighlightMode::Text {
+                        if !view_line.is_active {
+                            content_spans =
+                                clear_leading_ws_bg(content_spans, Some(app.theme.diff_context));
+                        }
+                    } else if app.diff_highlight == DiffHighlightMode::Word {
+                        content_spans = clear_leading_ws_bg(content_spans, None);
+                    }
+                } else if app.diff_highlight == DiffHighlightMode::Word {
+                    content_spans = super::replace_leading_ws_bg(content_spans, None, line_bg_line);
+                }
+            }
+
+            let mut italic_line = false;
+            if app.syntax_enabled() {
+                if used_syntax {
+                    italic_line = super::line_is_italic(&content_spans);
+                } else {
+                    let use_old = view_line.kind == LineKind::Context && view_line.has_changes;
+                    let side = if use_old {
+                        SyntaxSide::Old
+                    } else {
+                        SyntaxSide::New
+                    };
+                    let line_num = if use_old {
+                        view_line.old_line.or(Some(new_line_num))
+                    } else {
+                        Some(new_line_num)
+                    };
+                    if let Some(spans) = app.syntax_spans_for_line(side, line_num) {
+                        italic_line = super::line_is_italic(&spans);
+                    }
+                }
             }
 
             let line_text = spans_to_text(&content_spans);
@@ -722,6 +967,9 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
                 && has_query
                 && line_text.to_ascii_lowercase().contains(&query);
             content_spans = app.highlight_search_spans(content_spans, &line_text, is_active_match);
+            if italic_line {
+                content_spans = super::apply_italic_spans(content_spans);
+            }
 
             content_spans = expand_tabs_in_spans(&content_spans, TAB_WIDTH);
 
@@ -736,7 +984,7 @@ fn render_new_pane(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut display_spans = content_spans;
             if !app.line_wrap {
                 display_spans = slice_spans(&display_spans, app.horizontal_scroll, visible_width);
-                if app.diff_bg == DiffBackgroundMode::Line {
+                if app.diff_bg {
                     if let Some(bg) = diff_line_bg(bg_kind, &app.theme) {
                         display_spans = pad_spans_bg(display_spans, bg, visible_width);
                     }
@@ -869,6 +1117,7 @@ fn split_wrap_display_metrics(
     new_width: usize,
     scroll_offset: usize,
     step_direction: StepDirection,
+    align_lines: bool,
 ) -> (usize, Option<usize>) {
     let mut old_len = 0usize;
     let mut new_len = 0usize;
@@ -878,26 +1127,44 @@ fn split_wrap_display_metrics(
     let mut new_fallback_idx: Option<usize> = None;
 
     for line in view {
-        if line.old_line.is_some() {
-            if line.is_primary_active {
-                old_primary_idx = Some(old_len);
-            } else if line.is_active && old_fallback_idx.is_none() {
-                old_fallback_idx = Some(old_len);
+        let old_present = line.old_line.is_some();
+        let new_present = line.new_line.is_some()
+            && !matches!(line.kind, LineKind::Deleted | LineKind::PendingDelete);
+
+        let old_wrap = if old_present {
+            split_old_line_wrap_count(app, line, old_width)
+        } else if align_lines && new_present {
+            split_new_line_wrap_count(app, line, old_width)
+        } else {
+            0
+        };
+        let new_wrap = if new_present {
+            split_new_line_wrap_count(app, line, new_width)
+        } else if align_lines && old_present {
+            split_old_line_wrap_count(app, line, new_width)
+        } else {
+            0
+        };
+
+        if old_wrap > 0 {
+            if old_present {
+                if line.is_primary_active {
+                    old_primary_idx = Some(old_len);
+                } else if line.is_active && old_fallback_idx.is_none() {
+                    old_fallback_idx = Some(old_len);
+                }
             }
-            let wrap_count = split_old_line_wrap_count(app, line, old_width);
-            old_len += wrap_count;
+            old_len += old_wrap;
         }
-        if line.new_line.is_some() {
-            if matches!(line.kind, LineKind::Deleted | LineKind::PendingDelete) {
-                continue;
+        if new_wrap > 0 {
+            if new_present {
+                if line.is_primary_active {
+                    new_primary_idx = Some(new_len);
+                } else if line.is_active && new_fallback_idx.is_none() {
+                    new_fallback_idx = Some(new_len);
+                }
             }
-            if line.is_primary_active {
-                new_primary_idx = Some(new_len);
-            } else if line.is_active && new_fallback_idx.is_none() {
-                new_fallback_idx = Some(new_len);
-            }
-            let wrap_count = split_new_line_wrap_count(app, line, new_width);
-            new_len += wrap_count;
+            new_len += new_wrap;
         }
     }
 
@@ -1004,10 +1271,19 @@ fn get_old_span_style(
     _line_kind: LineKind,
     is_active: bool,
     app: &App,
+    highlight_allowed: bool,
 ) -> Style {
     let theme = &app.theme;
-    let use_bg = app.diff_bg == DiffBackgroundMode::Text;
-    let removed_bg = if use_bg { theme.diff_removed_bg } else { None };
+    let use_bg = highlight_allowed
+        && matches!(
+            app.diff_highlight,
+            DiffHighlightMode::Text | DiffHighlightMode::Word
+        );
+    let removed_bg = if use_bg {
+        super::boost_inline_bg(app, theme.diff_removed_bg, theme.delete_base())
+    } else {
+        None
+    };
     match kind {
         ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Deleted => {
@@ -1081,10 +1357,19 @@ fn get_new_span_style(
     _line_kind: LineKind,
     is_active: bool,
     app: &App,
+    highlight_allowed: bool,
 ) -> Style {
     let theme = &app.theme;
-    let use_bg = app.diff_bg == DiffBackgroundMode::Text;
-    let added_bg = if use_bg { theme.diff_added_bg } else { None };
+    let use_bg = highlight_allowed
+        && matches!(
+            app.diff_highlight,
+            DiffHighlightMode::Text | DiffHighlightMode::Word
+        );
+    let added_bg = if use_bg {
+        super::boost_inline_bg(app, theme.diff_added_bg, theme.insert_base())
+    } else {
+        None
+    };
     match kind {
         ViewSpanKind::Equal => Style::default().fg(theme.diff_context),
         ViewSpanKind::Inserted => {
