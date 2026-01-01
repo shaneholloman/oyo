@@ -45,14 +45,16 @@ oyo does **not** replace classic diffs, it adds a new way to review them.
   Move through changes one at a time with keyboard shortcuts
 - **Hunk navigation**
   Jump between groups of related changes in both modes
-- **Three view modes**:
+- **Four view modes**:
   - **Unified**: Watch the code morph from old to new state
   - **Split**: See old and new versions with synchronized stepping
   - **Evolution**: Watch the file evolve, deletions simply disappear
+  - **Blame**: Per-line git blame gutter (opt-in)
 - **Word-level diffing**: See exactly which words changed within a line
 - **Multi-file support**: Navigate between changed files with preserved positions
 - **Search**: Regex search with to jump between matches
 - **Syntax highlighting**: Toggle on/off for code-aware coloring (auto-enabled in no-step mode)
+- **Blame hints**: One-shot or toggle blame previews while stepping (opt-in)
 - **Line wrap**: Toggle wrapping for long lines
 - **Animated transitions**: Smooth fade in/out animations as changes are applied
 - **Playback**: Automatically step through all changes at a configurable speed
@@ -174,6 +176,7 @@ command = ["oy", "$left", "$right"]
 | `←` / `h` | Previous hunk (scrolls in no-step mode) |
 | `b` | Jump to beginning of current hunk (scrolls in no-step mode) |
 | `e` | Jump to end of current hunk (scrolls in no-step mode) |
+| `gb` | Blame current step (opt-in, step mode) |
 | `p` / `P` | Peek change (modified → old → mixed) / Peek old hunk |
 | `y` / `Y` | Yank line/hunk to clipboard |
 | `/` | Search (diff pane, regex) |
@@ -184,7 +187,8 @@ command = ["oy", "$left", "$right"]
 | `gg` | Go to start (scroll-only in no-step mode) |
 | `G` | Go to end (scroll-only in no-step mode) |
 | `Space` / `B` | Autoplay forward/reverse |
-| `Tab` | Toggle view mode |
+| `Tab` | Cycle view mode |
+| `Shift+Tab` | Cycle view mode (reverse) |
 | `K` | Scroll up (supports count) |
 | `J` | Scroll down (supports count) |
 | `H` | Scroll left (supports count) |
@@ -224,7 +228,7 @@ Create a config file at `~/.config/oyo/config.toml`:
 [ui]
 auto_center = true          # Auto-center on active change (default: true)
 topbar = true               # Show top bar in diff view (default: true)
-view_mode = "unified"       # Default: "unified", "split", or "evolution"
+view_mode = "unified"       # Default: "unified", "split", "evolution", or "blame"
 line_wrap = false           # Wrap long lines (default: false, uses horizontal scroll)
 scrollbar = false           # Show scrollbar (default: false)
 strikethrough_deletions = false # Show strikethrough on deleted text
@@ -240,6 +244,10 @@ hunk = "none"               # "none" | "hunk" | "file"
 # highlight = "text"        # "text" | "word" | "none"
 # extent_marker = "neutral" # "neutral" or "diff"
 # extent_marker_scope = "progress" # "progress" or "hunk"
+# [ui.blame]
+# enabled = false           # Show git blame hints (opt-in)
+# mode = "one_shot"         # "one_shot" or "toggle"
+# hunk_hint = true          # Show blame hint when jumping to a hunk
 # [ui.split]
 # align_lines = false       # Insert blanks to keep split panes aligned
 # align_fill = "╱"          # Fill character for aligned blanks (empty = no marker)
@@ -288,6 +296,9 @@ auto_center = true
 view_mode = "unified"
 gutter_signs = false
 topbar = true
+
+[ui.blame]
+enabled = true
 
 [ui.theme]
 name = "tokyonight"
