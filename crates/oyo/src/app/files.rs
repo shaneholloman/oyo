@@ -129,6 +129,8 @@ impl App {
         self.restore_scroll_position_for(self.multi_diff.selected_index);
         self.animation_phase = AnimationPhase::Idle;
         self.animation_progress = 1.0;
+        self.view_build_defer = false;
+        self.view_build_pending = false;
         self.reset_search_for_file_switch();
         self.centered_once = false;
         self.update_file_list_scroll();
@@ -170,6 +172,14 @@ impl App {
     /// Handle entering a file (marks visited, optionally auto-steps to first change)
     /// Called on initial file and when switching files.
     pub fn handle_file_enter(&mut self) {
+        self.queue_current_file_diff();
+        if self.stepping && !self.current_file_diff_ready() {
+            return;
+        }
+        self.finish_file_enter();
+    }
+
+    pub(crate) fn finish_file_enter(&mut self) {
         let idx = self.multi_diff.selected_index;
 
         if !self.stepping {
@@ -200,13 +210,18 @@ impl App {
             return;
         }
 
+        let is_large = self.multi_diff.file_is_large(idx);
+        if is_large {
+            self.files_visited[idx] = true;
+            return;
+        }
+
         // Mark as visited
         self.files_visited[idx] = true;
 
         let state = self.multi_diff.current_navigator().state();
         let at_step_0 = state.current_step == 0;
         let has_steps = state.total_steps > 1;
-
         if !at_step_0 || !has_steps {
             return;
         }

@@ -210,8 +210,14 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
         .current_navigator()
         .set_show_hunk_extent_while_stepping(show_extent);
     let view_lines = app.current_view_with_frame(AnimationFrame::Idle);
+    let mut scroll_offset = app.render_scroll_offset();
     let step_direction = app.multi_diff.current_step_direction();
     let preview_hunk = app.multi_diff.current_navigator().state().current_hunk;
+    let debug_enabled = super::view_debug_enabled();
+    if debug_enabled {
+        crate::syntax::syntax_debug_reset();
+    }
+    app.begin_syntax_warmup_frame();
 
     // Split into two panes
     let chunks = Layout::default()
@@ -225,17 +231,13 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
     let new_width = chunks[1]
         .width
         .saturating_sub(NEW_GUTTER_WIDTH + NEW_MARKER_WIDTH) as usize;
-    let hunk_overflow = if app.line_wrap {
-        split_hunk_overflow_wrapped(
-            app,
-            &view_lines,
-            preview_hunk,
-            visible_height,
-            old_width,
-            new_width,
-        )
+    let debug_extra = if debug_enabled {
+        Some(format!(
+            "split old_width={} new_width={} align_lines={}",
+            old_width, new_width, app.split_align_lines
+        ))
     } else {
-        app.hunk_hint_overflow(preview_hunk, visible_height)
+        None
     };
 
     if app.line_wrap {
@@ -244,23 +246,46 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
             &view_lines,
             old_width,
             new_width,
-            app.scroll_offset,
+            scroll_offset,
             step_direction,
             app.split_align_lines,
         );
         app.ensure_active_visible_if_needed_wrapped(visible_height, display_len, active_idx);
-        app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
+        let total_len = app.render_total_lines(display_len);
+        let scroll_before = app.scroll_offset;
+        app.clamp_scroll(total_len, visible_height, app.allow_overscroll());
+        if app.scroll_offset != scroll_before {
+            scroll_offset = app.render_scroll_offset();
+        }
     } else {
         let (display_len, _) = crate::app::display_metrics(
             &view_lines,
             app.view_mode,
             app.animation_phase,
-            app.scroll_offset,
+            scroll_offset,
             step_direction,
             app.split_align_lines,
         );
-        app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
+        let total_len = app.render_total_lines(display_len);
+        let scroll_before = app.scroll_offset;
+        app.clamp_scroll(total_len, visible_height, app.allow_overscroll());
+        if app.scroll_offset != scroll_before {
+            scroll_offset = app.render_scroll_offset();
+        }
     }
+    let hunk_overflow = if app.line_wrap {
+        split_hunk_overflow_wrapped(
+            app,
+            &view_lines,
+            preview_hunk,
+            scroll_offset,
+            visible_height,
+            old_width,
+            new_width,
+        )
+    } else {
+        app.hunk_hint_overflow(preview_hunk, visible_height)
+    };
     if !app.line_wrap {
         app.clamp_horizontal_scroll_cached(old_width.min(new_width));
     }
@@ -287,8 +312,35 @@ pub fn render_split(frame: &mut Frame, app: &mut App, area: Rect) {
         _ => (true, true),
     };
 
-    render_old_pane(frame, app, chunks[0], hunk_overflow, show_virtual_old);
-    render_new_pane(frame, app, chunks[1], hunk_overflow, show_virtual_new);
+    render_old_pane(
+        frame,
+        app,
+        chunks[0],
+        hunk_overflow,
+        show_virtual_old,
+        scroll_offset,
+    );
+    render_new_pane(
+        frame,
+        app,
+        chunks[1],
+        hunk_overflow,
+        show_virtual_new,
+        scroll_offset,
+    );
+    app.commit_syntax_warmup_frame();
+    if debug_enabled {
+        let extra = super::merge_debug_extra(debug_extra, super::syntax_debug_extra());
+        super::maybe_log_view_debug(
+            app,
+            view_lines.as_ref(),
+            "split",
+            visible_height,
+            area.width as usize,
+            scroll_offset,
+            extra,
+        );
+    }
 }
 
 fn render_old_pane(
@@ -297,6 +349,7 @@ fn render_old_pane(
     area: Rect,
     hunk_overflow: Option<(bool, bool)>,
     show_virtual_pane: bool,
+    scroll_offset: usize,
 ) {
     // Clone markers to avoid borrow conflicts
     let primary_marker = app.primary_marker.clone();
@@ -305,6 +358,15 @@ fn render_old_pane(
     let view_lines = app.current_view_with_frame(AnimationFrame::Idle);
     let visible_height = area.height as usize;
     let visible_width = area.width.saturating_sub(GUTTER_WIDTH + 1) as usize; // +1 for border
+    let syntax_window = if app.line_wrap {
+        Some(super::syntax_highlight_window(
+            scroll_offset,
+            visible_height,
+        ))
+    } else {
+        None
+    };
+    let warmup_window = super::syntax_highlight_window(scroll_offset, visible_height);
     let debug_target = app.syntax_scope_target(&view_lines);
     let mut bg_lines: Option<Vec<Line<'static>>> = if app.line_wrap && app.diff_bg {
         Some(Vec::new())
@@ -382,9 +444,7 @@ fn render_old_pane(
             display_idx += 1;
         }
         cursor_display
-            .map(|idx| {
-                idx >= app.scroll_offset && idx < app.scroll_offset.saturating_add(visible_height)
-            })
+            .map(|idx| idx >= scroll_offset && idx < scroll_offset.saturating_add(visible_height))
             .unwrap_or(false)
     };
     let visible_indices: Vec<usize> = view_lines
@@ -468,7 +528,7 @@ fn render_old_pane(
         }
 
         // When wrapping, we need all lines
-        if !app.line_wrap && line_idx < app.scroll_offset {
+        if !app.line_wrap && line_idx < scroll_offset {
             line_idx += 1;
             continue;
         }
@@ -567,6 +627,7 @@ fn render_old_pane(
                 None
             };
 
+            let show_extent = super::show_extent_marker(app, view_line);
             // Gutter marker: primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
                 (
@@ -575,7 +636,7 @@ fn render_old_pane(
                         .fg(app.theme.primary)
                         .add_modifier(Modifier::BOLD),
                 )
-            } else if view_line.show_hunk_extent {
+            } else if show_extent {
                 (
                     extent_marker.as_str(),
                     super::extent_marker_style(
@@ -617,6 +678,25 @@ fn render_old_pane(
             } else {
                 Some(old_line_num)
             };
+            let (line_display_start, line_display_end) = if app.line_wrap {
+                let wrap_hint = split_old_line_wrap_count(app, view_line, visible_width).max(1);
+                let line_display_start = content_lines.len();
+                let line_display_end =
+                    line_display_start.saturating_add(wrap_hint.saturating_sub(1));
+                (line_display_start, line_display_end)
+            } else {
+                (line_idx, line_idx)
+            };
+            let in_syntax_window = if app.line_wrap {
+                super::in_syntax_window(syntax_window, line_display_start, line_display_end)
+            } else {
+                true
+            };
+            let in_warmup_window = if app.line_wrap {
+                super::in_syntax_window(Some(warmup_window), line_display_start, line_display_end)
+            } else {
+                true
+            };
             // Build content line
             let mut content_spans: Vec<Span<'static>> = Vec::new();
             let mut used_syntax = false;
@@ -644,11 +724,17 @@ fn render_old_pane(
                 let modified_line =
                     matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
                 let can_use_diff_syntax = wants_diff_syntax && !modified_line;
-                if app.syntax_enabled()
+                if in_syntax_window
+                    && app.syntax_enabled()
                     && !preview_modified
                     && !view_line.is_active_change
                     && (pure_context || can_use_diff_syntax || in_preview_hunk)
                 {
+                    if in_warmup_window {
+                        if let Some(line_num) = syntax_line_num {
+                            app.record_syntax_warmup_line(SyntaxSide::Old, line_num);
+                        }
+                    }
                     if let Some(spans) = app.syntax_spans_for_line(SyntaxSide::Old, syntax_line_num)
                     {
                         content_spans = spans;
@@ -661,8 +747,7 @@ fn render_old_pane(
                         .multi_diff
                         .current_navigator()
                         .state()
-                        .applied_changes
-                        .contains(&view_line.change_id);
+                        .is_applied(view_line.change_id);
                     let show_inline = view_line.old_line.is_some()
                         && view_line.new_line.is_some()
                         && (view_line.is_active
@@ -789,10 +874,11 @@ fn render_old_pane(
             if app.syntax_enabled() {
                 if used_syntax {
                     italic_line = super::line_is_italic(&content_spans);
-                } else if let Some(spans) =
-                    app.syntax_spans_for_line(SyntaxSide::Old, syntax_line_num)
-                {
-                    italic_line = super::line_is_italic(&spans);
+                } else if in_syntax_window {
+                    if let Some(spans) = app.syntax_spans_for_line(SyntaxSide::Old, syntax_line_num)
+                    {
+                        italic_line = super::line_is_italic(&spans);
+                    }
                 }
             }
 
@@ -842,7 +928,7 @@ fn render_old_pane(
             }
             content_lines.push(Line::from(display_spans));
             if app.line_wrap && wrap_count > 1 {
-                let (wrap_marker, wrap_style) = if view_line.show_hunk_extent {
+                let (wrap_marker, wrap_style) = if show_extent {
                     (
                         extent_marker.as_str(),
                         super::extent_marker_style(
@@ -1012,7 +1098,7 @@ fn render_old_pane(
 
     // Render gutter (no horizontal scroll)
     let mut gutter_paragraph = if app.line_wrap {
-        Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
+        Paragraph::new(gutter_lines).scroll((scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
@@ -1040,13 +1126,13 @@ fn render_old_pane(
         let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
-                .scroll((app.scroll_offset as u16, 0))
+                .scroll((scroll_offset as u16, 0))
         } else {
             Paragraph::new(content_lines)
         };
         let has_bg_overlay = bg_lines.is_some();
         if let Some(bg_lines) = bg_lines {
-            let mut bg_paragraph = Paragraph::new(bg_lines).scroll((app.scroll_offset as u16, 0));
+            let mut bg_paragraph = Paragraph::new(bg_lines).scroll((scroll_offset as u16, 0));
             if let Some(style) = bg_style {
                 bg_paragraph = bg_paragraph.style(style);
             }
@@ -1078,6 +1164,7 @@ fn render_new_pane(
     area: Rect,
     hunk_overflow: Option<(bool, bool)>,
     show_virtual_pane: bool,
+    scroll_offset: usize,
 ) {
     // Clone markers to avoid borrow conflicts
     let primary_marker_right = app.primary_marker_right.clone();
@@ -1086,6 +1173,15 @@ fn render_new_pane(
     let animation_frame = app.animation_frame();
     let view_lines = app.current_view_with_frame(animation_frame);
     let visible_height = area.height as usize;
+    let syntax_window = if app.line_wrap {
+        Some(super::syntax_highlight_window(
+            scroll_offset,
+            visible_height,
+        ))
+    } else {
+        None
+    };
+    let warmup_window = super::syntax_highlight_window(scroll_offset, visible_height);
     let debug_target = app.syntax_scope_target(&view_lines);
     let mut bg_lines: Option<Vec<Line<'static>>> = if app.line_wrap && app.diff_bg {
         Some(Vec::new())
@@ -1163,9 +1259,7 @@ fn render_new_pane(
             display_idx += 1;
         }
         cursor_display
-            .map(|idx| {
-                idx >= app.scroll_offset && idx < app.scroll_offset.saturating_add(visible_height)
-            })
+            .map(|idx| idx >= scroll_offset && idx < scroll_offset.saturating_add(visible_height))
             .unwrap_or(false)
     };
     let visible_indices: Vec<usize> = view_lines
@@ -1251,7 +1345,7 @@ fn render_new_pane(
         }
 
         // When wrapping, we need all lines
-        if !app.line_wrap && line_idx < app.scroll_offset {
+        if !app.line_wrap && line_idx < scroll_offset {
             line_idx += 1;
             continue;
         }
@@ -1352,6 +1446,7 @@ fn render_new_pane(
                 None
             };
 
+            let show_extent = super::show_extent_marker(app, view_line);
             // Gutter marker: right-pane primary marker for focus, extent marker for hunk nav, blank otherwise
             let (active_marker, active_style) = if view_line.is_primary_active {
                 (
@@ -1360,7 +1455,7 @@ fn render_new_pane(
                         .fg(app.theme.primary)
                         .add_modifier(Modifier::BOLD),
                 )
-            } else if view_line.show_hunk_extent {
+            } else if show_extent {
                 (
                     extent_marker_right.as_str(),
                     super::extent_marker_style(
@@ -1394,6 +1489,25 @@ fn render_new_pane(
             } else {
                 Some(new_line_num)
             };
+            let (line_display_start, line_display_end) = if app.line_wrap {
+                let wrap_hint = split_new_line_wrap_count(app, view_line, visible_width).max(1);
+                let line_display_start = content_lines.len();
+                let line_display_end =
+                    line_display_start.saturating_add(wrap_hint.saturating_sub(1));
+                (line_display_start, line_display_end)
+            } else {
+                (line_idx, line_idx)
+            };
+            let in_syntax_window = if app.line_wrap {
+                super::in_syntax_window(syntax_window, line_display_start, line_display_end)
+            } else {
+                true
+            };
+            let in_warmup_window = if app.line_wrap {
+                super::in_syntax_window(Some(warmup_window), line_display_start, line_display_end)
+            } else {
+                true
+            };
             // Build content line
             let mut content_spans: Vec<Span<'static>> = Vec::new();
             let mut used_syntax = false;
@@ -1421,7 +1535,8 @@ fn render_new_pane(
                 let modified_line =
                     matches!(view_line.kind, LineKind::Modified | LineKind::PendingModify);
                 let can_use_diff_syntax = wants_diff_syntax && !modified_line;
-                if app.syntax_enabled()
+                if in_syntax_window
+                    && app.syntax_enabled()
                     && !preview_modified
                     && !view_line.is_active_change
                     && (pure_context || can_use_diff_syntax || in_preview_hunk)
@@ -1437,6 +1552,11 @@ fn render_new_pane(
                     } else {
                         syntax_line_num
                     };
+                    if in_warmup_window {
+                        if let Some(line_num) = line_num {
+                            app.record_syntax_warmup_line(side, line_num);
+                        }
+                    }
                     if let Some(spans) = app.syntax_spans_for_line(side, line_num) {
                         content_spans = spans;
                         used_syntax = true;
@@ -1448,8 +1568,7 @@ fn render_new_pane(
                         .multi_diff
                         .current_navigator()
                         .state()
-                        .applied_changes
-                        .contains(&view_line.change_id);
+                        .is_applied(view_line.change_id);
                     let show_inline = view_line.old_line.is_some()
                         && view_line.new_line.is_some()
                         && (view_line.is_active
@@ -1565,7 +1684,7 @@ fn render_new_pane(
             if app.syntax_enabled() {
                 if used_syntax {
                     italic_line = super::line_is_italic(&content_spans);
-                } else {
+                } else if in_syntax_window {
                     let use_old = view_line.kind == LineKind::Context && view_line.has_changes;
                     let side = if use_old {
                         SyntaxSide::Old
@@ -1632,7 +1751,7 @@ fn render_new_pane(
             // Build marker line
             marker_lines.push(Line::from(Span::styled(active_marker, active_style)));
             if app.line_wrap && wrap_count > 1 {
-                let (wrap_marker, wrap_style) = if view_line.show_hunk_extent {
+                let (wrap_marker, wrap_style) = if show_extent {
                     (
                         extent_marker_right.as_str(),
                         super::extent_marker_style(
@@ -1803,7 +1922,7 @@ fn render_new_pane(
 
     // Render gutter (no horizontal scroll)
     let mut gutter_paragraph = if app.line_wrap {
-        Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
+        Paragraph::new(gutter_lines).scroll((scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
@@ -1831,13 +1950,13 @@ fn render_new_pane(
         let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
-                .scroll((app.scroll_offset as u16, 0))
+                .scroll((scroll_offset as u16, 0))
         } else {
             Paragraph::new(content_lines)
         };
         let has_bg_overlay = bg_lines.is_some();
         if let Some(bg_lines) = bg_lines {
-            let mut bg_paragraph = Paragraph::new(bg_lines).scroll((app.scroll_offset as u16, 0));
+            let mut bg_paragraph = Paragraph::new(bg_lines).scroll((scroll_offset as u16, 0));
             if let Some(style) = bg_style {
                 bg_paragraph = bg_paragraph.style(style);
             }
@@ -1853,7 +1972,7 @@ fn render_new_pane(
 
     // Render marker (no horizontal scroll)
     let mut marker_paragraph = if app.line_wrap {
-        Paragraph::new(marker_lines).scroll((app.scroll_offset as u16, 0))
+        Paragraph::new(marker_lines).scroll((scroll_offset as u16, 0))
     } else {
         Paragraph::new(marker_lines)
     };
@@ -1959,6 +2078,7 @@ fn split_hunk_overflow_wrapped(
     app: &mut App,
     view: &[ViewLine],
     hunk_idx: usize,
+    scroll_offset: usize,
     viewport_height: usize,
     old_width: usize,
     new_width: usize,
@@ -2016,8 +2136,8 @@ fn split_hunk_overflow_wrapped(
     let new_bounds = new_start.zip(new_end);
     let (start, end) = match (old_bounds, new_bounds) {
         (Some(old), Some(new)) => {
-            let old_dist = (old.0 as isize - app.scroll_offset as isize).abs();
-            let new_dist = (new.0 as isize - app.scroll_offset as isize).abs();
+            let old_dist = (old.0 as isize - scroll_offset as isize).abs();
+            let new_dist = (new.0 as isize - scroll_offset as isize).abs();
             if old_dist < new_dist {
                 old
             } else {
@@ -2029,10 +2149,8 @@ fn split_hunk_overflow_wrapped(
         (None, None) => return None,
     };
 
-    let visible_start = app.scroll_offset;
-    let visible_end = app
-        .scroll_offset
-        .saturating_add(viewport_height.saturating_sub(1));
+    let visible_start = scroll_offset;
+    let visible_end = scroll_offset.saturating_add(viewport_height.saturating_sub(1));
     Some((start < visible_start, end > visible_end))
 }
 

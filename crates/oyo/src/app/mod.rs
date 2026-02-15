@@ -8,14 +8,18 @@ use crate::config::{
 };
 use crate::syntax::{SyntaxCache, SyntaxEngine};
 use crate::time_format::TimeFormatter;
-use oyo_core::{AnimationFrame, MultiFileDiff, StepDirection, StepState, ViewLine};
+use oyo_core::{
+    multi::DiffStatus, AnimationFrame, LineKind, MultiFileDiff, StepDirection, StepState, ViewLine,
+};
 use ratatui::style::Color;
 use regex::Regex;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod blame;
+mod diff_worker;
 mod file_panel;
 mod files;
 mod navigation;
@@ -28,15 +32,28 @@ mod utils;
 
 pub(crate) use types::{
     AnimationPhase, BlameDisplay, BlameRenderCache, BlameRenderKey, PeekMode, PeekScope, PeekState,
-    ViewMode, DIFF_VIEW_MIN_WIDTH, FILE_PANEL_MIN_WIDTH,
+    UnifiedRenderKey, UnifiedRenderModel, ViewMode, DIFF_VIEW_MIN_WIDTH, FILE_PANEL_MIN_WIDTH,
 };
 use types::{
     BlameCacheKey, BlamePrefetchKey, BlamePrefetchRange, BlameRequest, BlameResponse,
-    BlameStepHint, HunkBounds, HunkEdge, HunkEdgeHint, HunkStart, NoStepState, StepEdge,
-    StepEdgeHint, SyntaxScopeCache,
+    BlameStepHint, DiffRequest, DiffResponse, HunkBounds, HunkEdge, HunkEdgeHint, HunkStart,
+    NoStepState, StepEdge, StepEdgeHint, SyntaxScopeCache,
 };
 use utils::{allow_overscroll_state, max_scroll};
 pub(crate) use utils::{display_metrics, is_conflict_marker, is_fold_line};
+
+type UnifiedHunkCacheKey = (usize, ViewMode, FoldContextMode, bool, usize, usize, usize);
+type SplitHunkCacheKey = (usize, FoldContextMode, bool, bool, usize, usize, usize);
+type UnifiedHunkStartsCache = Option<(UnifiedHunkCacheKey, Vec<Option<HunkStart>>)>;
+type UnifiedHunkBoundsCache = Option<(UnifiedHunkCacheKey, Vec<Option<HunkBounds>>)>;
+type SplitHunkStartsCache = Option<(
+    SplitHunkCacheKey,
+    (Vec<Option<HunkStart>>, Vec<Option<HunkStart>>),
+)>;
+type SplitHunkBoundsCache = Option<(
+    SplitHunkCacheKey,
+    (Vec<Option<HunkBounds>>, Vec<Option<HunkBounds>>),
+)>;
 
 /// The main application state
 pub struct App {
@@ -120,6 +137,10 @@ pub struct App {
     pub pending_count: Option<usize>,
     /// Pending "g" prefix for vim-style commands (e.g., gg)
     pub pending_g_prefix: bool,
+    /// Defer heavy view rebuild by one frame (for large-file jumps)
+    view_build_defer: bool,
+    /// True while a deferred view rebuild is pending
+    view_build_pending: bool,
     /// Horizontal scroll offset (for long lines)
     pub horizontal_scroll: usize,
     /// Per-file horizontal scroll offsets when stepping
@@ -192,6 +213,8 @@ pub struct App {
     pub diff_extent_marker: DiffExtentMarkerMode,
     /// Diff extent marker scope
     pub diff_extent_marker_scope: DiffExtentMarkerScope,
+    /// Show extent markers on unchanged context lines within a hunk
+    pub diff_extent_marker_context: bool,
     /// Blame display enabled
     pub blame_enabled: bool,
     /// Blame display mode
@@ -203,25 +226,46 @@ pub struct App {
     /// Cached git user name for blame display
     blame_user_name: Option<String>,
     /// Cached blame entries
-    blame_cache: HashMap<BlameCacheKey, BlameInfo>,
+    blame_cache: FxHashMap<BlameCacheKey, BlameInfo>,
     /// Cached blame display text (used as fallback while loading)
-    blame_display_cache: HashMap<BlameCacheKey, BlameDisplay>,
+    blame_display_cache: FxHashMap<BlameCacheKey, BlameDisplay>,
     /// Cached blame bar colors (used as fallback while loading)
-    blame_bar_cache: HashMap<BlameCacheKey, Color>,
+    blame_bar_cache: FxHashMap<BlameCacheKey, Color>,
     /// Cached blame time ranges (min/max) per file/source
-    blame_time_ranges: HashMap<BlamePrefetchKey, (i64, i64)>,
+    blame_time_ranges: FxHashMap<BlamePrefetchKey, (i64, i64)>,
+    /// Cached unified hunk starts for no-step mode
+    hunk_starts_unified_cache: UnifiedHunkStartsCache,
+    /// Cached unified hunk bounds for no-step mode
+    hunk_bounds_unified_cache: UnifiedHunkBoundsCache,
+    /// Cached split hunk starts for no-step mode
+    hunk_starts_split_cache: SplitHunkStartsCache,
+    /// Cached split hunk bounds for no-step mode
+    hunk_bounds_split_cache: SplitHunkBoundsCache,
     /// Cached blame prefetch windows
-    blame_prefetch: HashMap<BlamePrefetchKey, BlamePrefetchRange>,
+    blame_prefetch: FxHashMap<BlamePrefetchKey, BlamePrefetchRange>,
     /// Cached blame render layout (for scroll performance)
     pub(crate) blame_render_cache: Option<BlameRenderCache>,
     /// Revision for blame cache updates
     pub(crate) blame_cache_revision: u64,
     /// Blame prefetch requests currently in flight
-    blame_pending: HashMap<BlamePrefetchKey, BlamePrefetchRange>,
+    blame_pending: FxHashMap<BlamePrefetchKey, BlamePrefetchRange>,
     /// Throttle blame prefetch to avoid repeated git calls
     blame_prefetch_at: Option<Instant>,
     blame_worker_tx: Option<mpsc::Sender<BlameRequest>>,
     blame_worker_rx: Option<mpsc::Receiver<BlameResponse>>,
+    /// Defer diff computation for large files
+    pub diff_defer: bool,
+    /// Idle time (ms) before background diff computation
+    pub diff_idle_ms: u64,
+    /// Last user interaction timestamp (for idle detection)
+    diff_last_input: Instant,
+    /// Pending diff jobs (file indices)
+    diff_queue: VecDeque<usize>,
+    /// Currently computing diff (file index)
+    diff_inflight: Option<usize>,
+    /// Worker thread for diff computation
+    diff_worker_tx: Option<mpsc::Sender<DiffRequest>>,
+    diff_worker_rx: Option<mpsc::Receiver<DiffResponse>>,
     /// Extra display rows after each line (blame wrapping).
     pub(crate) blame_extra_rows: Option<Vec<usize>>,
     /// One-shot blame hint for the active change
@@ -240,6 +284,24 @@ pub struct App {
     pub syntax_mode: SyntaxMode,
     /// Syntax theme selection
     pub syntax_theme: String,
+    /// Syntax warmup budget while actively navigating (lines per tick)
+    pub syntax_warmup_active_lines: usize,
+    /// Syntax warmup budget when waiting on a pending checkpoint (lines per tick)
+    pub syntax_warmup_pending_lines: usize,
+    /// Syntax warmup budget when idle (lines per tick)
+    pub syntax_warmup_idle_lines: usize,
+    /// Syntax warmup debounce window (ms)
+    pub syntax_warmup_debounce_ms: u64,
+    /// Warmup range (old side) accumulated for the current frame
+    syntax_warmup_frame_old: Option<WarmupRange>,
+    /// Warmup range (new side) accumulated for the current frame
+    syntax_warmup_frame_new: Option<WarmupRange>,
+    /// Latest warmup target from the viewport
+    syntax_warmup_target: Option<SyntaxWarmupTarget>,
+    /// Last warmup target applied to the cache
+    syntax_warmup_target_applied: Option<SyntaxWarmupTarget>,
+    /// Timestamp of the last warmup target update
+    syntax_warmup_target_at: Option<Instant>,
     /// Syntax highlighter (lazy initialized)
     syntax_engine: Option<SyntaxEngine>,
     /// Per-file syntax cache (old/new spans)
@@ -314,9 +376,66 @@ pub struct App {
     hunk_edge_hint: Option<HunkEdgeHint>,
     /// Last known viewport height for the diff area
     pub last_viewport_height: usize,
+    /// Cached view lines for the current state/frame
+    view_cache: Option<ViewCache>,
+    /// Cached render model for unified view
+    pub(crate) unified_render_cache: Option<UnifiedRenderModel>,
+    /// Windowed render start (for large-file partial rendering)
+    view_window_start: usize,
+    /// Total logical length for windowed render (for scrollbars/metrics)
+    view_window_total_len: Option<usize>,
 }
 
 const SNAP_PHASE_MS: u64 = 50;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ViewCacheKey {
+    file_index: usize,
+    view_mode: ViewMode,
+    frame: AnimationFrame,
+    current_step: usize,
+    active_change: Option<usize>,
+    cursor_change: Option<usize>,
+    animating_hunk: Option<usize>,
+    step_direction: StepDirection,
+    current_hunk: usize,
+    last_nav_was_hunk: bool,
+    hunk_preview_mode: bool,
+    preview_from_backward: bool,
+    show_hunk_extent_while_stepping: bool,
+    placeholder_view: bool,
+    fold_context: FoldContextMode,
+    viewport_height: usize,
+    windowed: bool,
+    window_start: usize,
+}
+
+struct ViewCache {
+    key: ViewCacheKey,
+    lines: std::sync::Arc<Vec<ViewLine>>,
+    window_start: usize,
+    window_total_len: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ViewWindow {
+    start: usize,
+    end: usize,
+    total_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WarmupRange {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SyntaxWarmupTarget {
+    file_index: usize,
+    old: Option<WarmupRange>,
+    new: Option<WarmupRange>,
+}
 
 impl App {
     pub fn new(
@@ -368,6 +487,8 @@ impl App {
             animation_duration: 150,
             pending_count: None,
             pending_g_prefix: false,
+            view_build_defer: false,
+            view_build_pending: false,
             horizontal_scroll: 0,
             horizontal_scrolls_step: vec![0; file_count],
             horizontal_scrolls_no_step: vec![0; file_count],
@@ -404,22 +525,34 @@ impl App {
             diff_highlight: DiffHighlightMode::Text,
             diff_extent_marker: DiffExtentMarkerMode::Neutral,
             diff_extent_marker_scope: DiffExtentMarkerScope::Progress,
+            diff_extent_marker_context: false,
             blame_enabled: false,
             blame_mode: BlameMode::OneShot,
             blame_hunk_hint_enabled: true,
             blame_toggle: false,
             blame_user_name: None,
-            blame_cache: HashMap::new(),
-            blame_display_cache: HashMap::new(),
-            blame_bar_cache: HashMap::new(),
-            blame_time_ranges: HashMap::new(),
-            blame_prefetch: HashMap::new(),
+            blame_cache: FxHashMap::default(),
+            blame_display_cache: FxHashMap::default(),
+            blame_bar_cache: FxHashMap::default(),
+            blame_time_ranges: FxHashMap::default(),
+            hunk_starts_unified_cache: None,
+            hunk_bounds_unified_cache: None,
+            hunk_starts_split_cache: None,
+            hunk_bounds_split_cache: None,
+            blame_prefetch: FxHashMap::default(),
             blame_render_cache: None,
             blame_cache_revision: 0,
-            blame_pending: HashMap::new(),
+            blame_pending: FxHashMap::default(),
             blame_prefetch_at: None,
             blame_worker_tx: None,
             blame_worker_rx: None,
+            diff_defer: true,
+            diff_idle_ms: 250,
+            diff_last_input: Instant::now(),
+            diff_queue: VecDeque::new(),
+            diff_inflight: None,
+            diff_worker_tx: None,
+            diff_worker_rx: None,
             blame_extra_rows: None,
             blame_step_hint: None,
             blame_hunk_hint: None,
@@ -429,6 +562,15 @@ impl App {
             evo_syntax: crate::config::EvoSyntaxMode::Context,
             syntax_mode: SyntaxMode::On,
             syntax_theme: "ansi".to_string(),
+            syntax_warmup_active_lines: 100,
+            syntax_warmup_pending_lines: 300,
+            syntax_warmup_idle_lines: 1_000,
+            syntax_warmup_debounce_ms: 80,
+            syntax_warmup_frame_old: None,
+            syntax_warmup_frame_new: None,
+            syntax_warmup_target: None,
+            syntax_warmup_target_applied: None,
+            syntax_warmup_target_at: None,
             syntax_engine: None,
             syntax_caches: vec![None; file_count],
             show_syntax_scopes: false,
@@ -466,6 +608,10 @@ impl App {
             step_edge_hint: None,
             hunk_edge_hint: None,
             last_viewport_height: 0,
+            view_cache: None,
+            unified_render_cache: None,
+            view_window_start: 0,
+            view_window_total_len: None,
         }
     }
 
@@ -866,12 +1012,303 @@ impl App {
         }
     }
 
-    pub(crate) fn current_view_with_frame(&mut self, frame: AnimationFrame) -> Vec<ViewLine> {
-        let view = self
-            .multi_diff
-            .current_navigator()
-            .current_view_with_frame(frame);
-        utils::fold_context_view(view, self.fold_context)
+    pub(crate) fn current_file_diff_ready(&self) -> bool {
+        matches!(
+            self.multi_diff.current_file_diff_status(),
+            DiffStatus::Ready
+        )
+    }
+
+    fn view_cache_key(
+        &mut self,
+        frame: AnimationFrame,
+        windowed: bool,
+        window_start: usize,
+    ) -> ViewCacheKey {
+        let idx = self.multi_diff.selected_index;
+        let state = self.multi_diff.current_navigator().state();
+        ViewCacheKey {
+            file_index: idx,
+            view_mode: self.view_mode,
+            frame,
+            current_step: state.current_step,
+            active_change: state.active_change,
+            cursor_change: state.cursor_change,
+            animating_hunk: state.animating_hunk,
+            step_direction: state.step_direction,
+            current_hunk: state.current_hunk,
+            last_nav_was_hunk: state.last_nav_was_hunk,
+            hunk_preview_mode: state.hunk_preview_mode,
+            preview_from_backward: state.preview_from_backward,
+            show_hunk_extent_while_stepping: state.show_hunk_extent_while_stepping,
+            placeholder_view: self.multi_diff.current_navigator_is_placeholder(),
+            fold_context: self.fold_context,
+            viewport_height: self.last_viewport_height,
+            windowed,
+            window_start,
+        }
+    }
+
+    pub(crate) fn render_scroll_offset(&self) -> usize {
+        self.scroll_offset.saturating_sub(self.view_window_start)
+    }
+
+    pub(crate) fn peek_state(&self) -> Option<PeekState> {
+        self.peek_state
+    }
+
+    pub(crate) fn view_window_start(&self) -> usize {
+        self.view_window_start
+    }
+
+    pub(crate) fn view_windowed(&self) -> bool {
+        self.view_window_total_len.is_some()
+    }
+
+    pub(crate) fn render_total_lines(&self, view_len: usize) -> usize {
+        self.view_window_total_len.unwrap_or(view_len)
+    }
+
+    pub(crate) fn view_build_pending(&self) -> bool {
+        self.view_build_pending
+    }
+
+    pub(crate) fn defer_view_build_for_jump(&mut self) {
+        if !self.stepping {
+            return;
+        }
+        if !self.multi_diff.current_file_is_large() {
+            return;
+        }
+        if !self.current_file_diff_ready() {
+            return;
+        }
+        if self.view_cache.is_none() {
+            return;
+        }
+        self.view_build_defer = true;
+    }
+
+    fn cancel_view_build_defer(&mut self) {
+        self.view_build_defer = false;
+        self.view_build_pending = false;
+    }
+
+    fn compute_view_window(&mut self) -> Option<ViewWindow> {
+        if self.line_wrap {
+            return None;
+        }
+        if !self.multi_diff.current_file_is_large() {
+            return None;
+        }
+        let allow_split = self.view_mode == ViewMode::Split
+            && self.split_align_lines
+            && !self.fold_context.is_enabled();
+        if !matches!(self.view_mode, ViewMode::UnifiedPane | ViewMode::Blame) && !allow_split {
+            return None;
+        }
+
+        let allow_overscroll = self.allow_overscroll();
+        let nav = self.multi_diff.current_navigator();
+        let total_len = nav.diff().changes.len();
+        if total_len == 0 {
+            return None;
+        }
+        let viewport_height = self.last_viewport_height.max(1);
+        let max_scroll = max_scroll(total_len, viewport_height, allow_overscroll);
+        if self.scroll_offset > max_scroll {
+            self.scroll_offset = max_scroll;
+        }
+
+        let span = self.last_viewport_height.max(20).saturating_mul(4).max(200);
+        let margin = span / 4;
+
+        if self.stepping {
+            let state = nav.state();
+            let change_id = state
+                .active_change
+                .or(state.applied_changes.last().copied())
+                .or_else(|| nav.diff().significant_changes.first().copied())?;
+            let idx = nav.change_index_for(change_id)?;
+            let mut start = idx.saturating_sub(span);
+            let mut end = (idx + span).min(total_len.saturating_sub(1));
+            let scroll = self.scroll_offset.min(total_len.saturating_sub(1));
+            if !self.needs_scroll_to_active {
+                let inside_window =
+                    scroll >= start.saturating_add(margin) && scroll <= end.saturating_sub(margin);
+                if !inside_window {
+                    start = scroll.saturating_sub(margin);
+                    end = (start + span).min(total_len.saturating_sub(1));
+                }
+            }
+            return Some(ViewWindow {
+                start,
+                end,
+                total_len,
+            });
+        }
+
+        let scroll = self.scroll_offset.min(total_len.saturating_sub(1));
+        if total_len <= span {
+            return Some(ViewWindow {
+                start: 0,
+                end: total_len.saturating_sub(1),
+                total_len,
+            });
+        }
+        let mut start = scroll.saturating_sub(margin);
+        let mut end = (start + span).min(total_len.saturating_sub(1));
+        if self.view_window_total_len.is_some() {
+            let current_start = self.view_window_start;
+            let current_end = (current_start + span).min(total_len.saturating_sub(1));
+            let inside_window = scroll >= current_start.saturating_add(margin)
+                && scroll <= current_end.saturating_sub(margin);
+            if inside_window {
+                start = current_start;
+                end = current_end;
+            }
+        }
+        Some(ViewWindow {
+            start,
+            end,
+            total_len,
+        })
+    }
+
+    pub(crate) fn current_view_with_frame(
+        &mut self,
+        frame: AnimationFrame,
+    ) -> std::sync::Arc<Vec<ViewLine>> {
+        let window = self.compute_view_window();
+        let windowed = window.is_some();
+        let window_start = window.map(|w| w.start).unwrap_or(0);
+        let mut window_start_override = None;
+        let mut window_total_override = None;
+        let key = self.view_cache_key(frame, windowed, window_start);
+        if let Some(cache) = &self.view_cache {
+            if cache.key == key {
+                self.view_window_start = cache.window_start;
+                self.view_window_total_len = cache.window_total_len;
+                self.view_build_pending = false;
+                return cache.lines.clone();
+            }
+        }
+        if self.view_build_defer {
+            self.view_build_defer = false;
+            if let Some(cache) = &self.view_cache {
+                if cache.key.file_index == self.multi_diff.selected_index {
+                    self.view_window_start = cache.window_start;
+                    self.view_window_total_len = cache.window_total_len;
+                    self.view_build_pending = true;
+                    return cache.lines.clone();
+                }
+            }
+            self.view_build_pending = false;
+        } else {
+            self.view_build_pending = false;
+        }
+        let mut view = if let Some(window) = window {
+            let nav = self.multi_diff.current_navigator();
+            let view = nav.current_view_for_change_range(frame, window.start, window.end);
+            if self.view_mode == ViewMode::Evolution {
+                let display_start = nav
+                    .evolution_display_index_for_change_index(window.start)
+                    .unwrap_or(0);
+                window_start_override = Some(display_start);
+                window_total_override = Some(nav.evolution_visible_len());
+            }
+            view
+        } else if self.stepping && self.multi_diff.current_file_is_large() {
+            let nav = self.multi_diff.current_navigator();
+            let state = nav.state();
+            let change_id = state
+                .active_change
+                .or(state.applied_changes.last().copied())
+                .or_else(|| nav.diff().significant_changes.first().copied());
+            if let Some(change_id) = change_id {
+                let radius = self.last_viewport_height.max(20).saturating_mul(4).max(200);
+                if self.view_mode == ViewMode::Evolution {
+                    if let Some(display_idx) = nav.evolution_display_index_or_nearest(change_id) {
+                        if let Some((start, end)) =
+                            nav.evolution_change_range_for_display(display_idx, radius)
+                        {
+                            let start_display = display_idx.saturating_sub(radius);
+                            window_start_override = Some(start_display);
+                            window_total_override = Some(nav.evolution_visible_len());
+                            nav.current_view_for_change_range(frame, start, end)
+                        } else if let Some(anchor) =
+                            nav.evolution_nearest_visible_change_id_dynamic(change_id, radius)
+                        {
+                            nav.current_view_for_change_window(frame, anchor, radius)
+                        } else {
+                            nav.current_view_for_change_window(frame, change_id, radius)
+                        }
+                    } else if let Some(anchor) =
+                        nav.evolution_nearest_visible_change_id_dynamic(change_id, radius)
+                    {
+                        nav.current_view_for_change_window(frame, anchor, radius)
+                    } else {
+                        nav.current_view_for_change_window(frame, change_id, radius)
+                    }
+                } else {
+                    nav.current_view_for_change_window(frame, change_id, radius)
+                }
+            } else {
+                nav.current_view_with_frame(frame)
+            }
+        } else {
+            self.multi_diff
+                .current_navigator()
+                .current_view_with_frame(frame)
+        };
+        if self.view_mode == ViewMode::Evolution && self.multi_diff.current_file_is_large() {
+            let nav = self.multi_diff.current_navigator();
+            let hunk_preview = nav.state().hunk_preview_mode;
+            let has_visible = view.iter().any(|line| match line.kind {
+                LineKind::Deleted => false,
+                LineKind::PendingDelete => {
+                    if hunk_preview {
+                        false
+                    } else {
+                        frame != AnimationFrame::Idle && line.is_active_change
+                    }
+                }
+                _ => true,
+            });
+            if !has_visible {
+                let state = nav.state();
+                let change_id = nav
+                    .state()
+                    .active_change
+                    .or(state.applied_changes.last().copied())
+                    .or_else(|| nav.diff().significant_changes.first().copied());
+                if let Some(change_id) = change_id {
+                    let radius = self.last_viewport_height.max(20).saturating_mul(4).max(200);
+                    if let Some(anchor) =
+                        nav.evolution_nearest_visible_change_id_dynamic(change_id, radius)
+                    {
+                        if let Some(display_idx) = nav.evolution_display_index_for_change(anchor) {
+                            window_start_override = Some(display_idx.saturating_sub(radius));
+                            window_total_override = Some(nav.evolution_visible_len());
+                        }
+                        view = nav.current_view_for_change_window(frame, anchor, radius);
+                    }
+                }
+            }
+        }
+        let view = utils::fold_context_view(view, self.fold_context);
+        let lines = std::sync::Arc::new(view);
+        let applied_start = window_start_override.unwrap_or(window_start);
+        let applied_total = window_total_override.or(window.map(|w| w.total_len));
+        self.view_window_start = applied_start;
+        self.view_window_total_len = applied_total;
+        self.view_cache = Some(ViewCache {
+            key,
+            lines: lines.clone(),
+            window_start: applied_start,
+            window_total_len: self.view_window_total_len,
+        });
+        lines
     }
 
     pub(crate) fn is_backward_animation(&self) -> bool {
@@ -900,6 +1337,9 @@ impl App {
 
     /// Ensure active change is visible if needed (called from views after stepping)
     pub fn ensure_active_visible_if_needed(&mut self, viewport_height: usize) {
+        if !self.current_file_diff_ready() {
+            return;
+        }
         if self.handle_search_scroll_if_needed(viewport_height) {
             return;
         }
@@ -909,24 +1349,28 @@ impl App {
         if self.auto_center && self.snap_frame.is_some() {
             return;
         }
-        self.needs_scroll_to_active = false;
+        let frame = self.animation_frame();
+        let view = self.current_view_with_frame(frame);
+        if self.view_build_pending {
+            return;
+        }
 
         let step_direction = self.multi_diff.current_step_direction();
         let auto_center = self.auto_center;
         // If auto_center is enabled, always center on active change
         if auto_center {
             self.center_on_active(viewport_height);
+            self.needs_scroll_to_active = false;
             return;
         }
 
-        let frame = self.animation_frame();
-        let view = self.current_view_with_frame(frame);
-
+        let scroll_offset = self.render_scroll_offset();
+        let view_start = self.view_window_start;
         let (display_len, display_idx) = display_metrics(
             &view,
             self.view_mode,
             self.animation_phase,
-            self.scroll_offset,
+            scroll_offset,
             step_direction,
             self.split_align_lines,
         );
@@ -935,16 +1379,13 @@ impl App {
             let margin = 3.min(viewport_height / 4);
 
             // Check if active line is above viewport
-            if idx < self.scroll_offset.saturating_add(margin) {
-                self.scroll_offset = idx.saturating_sub(margin);
+            if idx < scroll_offset.saturating_add(margin) {
+                self.scroll_offset = view_start.saturating_add(idx.saturating_sub(margin));
             }
             // Check if active line is below viewport
-            else if idx
-                >= self
-                    .scroll_offset
-                    .saturating_add(viewport_height.saturating_sub(margin))
-            {
-                self.scroll_offset = idx.saturating_sub(viewport_height.saturating_sub(margin + 1));
+            else if idx >= scroll_offset.saturating_add(viewport_height.saturating_sub(margin)) {
+                self.scroll_offset = view_start
+                    .saturating_add(idx.saturating_sub(viewport_height.saturating_sub(margin + 1)));
             }
         } else if display_len > 0 {
             let state = self.multi_diff.current_navigator().state();
@@ -954,6 +1395,7 @@ impl App {
             // No active line (step 0); snap to top so "first step" is visible.
             self.scroll_offset = 0;
         }
+        self.needs_scroll_to_active = false;
     }
 
     pub fn ensure_active_visible_if_needed_wrapped(
@@ -962,6 +1404,9 @@ impl App {
         display_len: usize,
         display_idx: Option<usize>,
     ) {
+        if !self.current_file_diff_ready() {
+            return;
+        }
         self.last_wrap_display_len = Some(display_len);
         self.last_wrap_active_idx = display_idx;
 
@@ -1030,6 +1475,41 @@ impl App {
             }
         }
 
+        if self.multi_diff.current_file_is_large() && self.view_mode != ViewMode::Split {
+            let nav = self.multi_diff.current_navigator();
+            let state = nav.state();
+            let primary_change = if state.cursor_change.is_some()
+                && state.active_change.is_none()
+                && state.step_direction == StepDirection::None
+            {
+                state.cursor_change
+            } else if state.step_direction == StepDirection::Backward {
+                state
+                    .applied_changes
+                    .last()
+                    .copied()
+                    .or(state.active_change)
+            } else {
+                state.active_change
+            };
+            let change_id = primary_change
+                .or(state.applied_changes.last().copied())
+                .or_else(|| nav.diff().significant_changes.first().copied());
+            if let Some(change_id) = change_id {
+                if self.view_mode == ViewMode::Evolution {
+                    if let Some(idx) = nav.evolution_display_index_or_nearest(change_id) {
+                        let display_len = nav.evolution_visible_len();
+                        self.center_with_display_idx(viewport_height, display_len, Some(idx));
+                        return;
+                    }
+                } else if let Some(idx) = nav.change_index_for(change_id) {
+                    let display_len = nav.diff().changes.len();
+                    self.center_with_display_idx(viewport_height, display_len, Some(idx));
+                    return;
+                }
+            }
+        }
+
         let frame = self.animation_frame();
         let view = self.current_view_with_frame(frame);
         let step_direction = self.multi_diff.current_step_direction();
@@ -1038,12 +1518,13 @@ impl App {
             &view,
             self.view_mode,
             self.animation_phase,
-            self.scroll_offset,
+            self.render_scroll_offset(),
             step_direction,
             self.split_align_lines,
         );
-
-        self.center_with_display_idx(viewport_height, display_len, display_idx);
+        let total_len = self.render_total_lines(display_len);
+        let global_idx = display_idx.map(|idx| idx.saturating_add(self.view_window_start));
+        self.center_with_display_idx(viewport_height, total_len, global_idx);
     }
 
     /// Called every frame to update animations and autoplay
@@ -1060,6 +1541,9 @@ impl App {
                 self.hunk_edge_hint = None;
             }
         }
+
+        self.poll_diff_responses();
+        self.maybe_queue_idle_diff();
 
         if let Some(frame) = self.snap_frame {
             let started_at = self.snap_frame_started_at.get_or_insert(now);
@@ -1136,6 +1620,8 @@ impl App {
                 self.last_autoplay_tick = now;
             }
         }
+
+        self.maybe_warm_syntax_cache();
     }
 }
 

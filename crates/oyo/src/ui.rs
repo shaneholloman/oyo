@@ -3,7 +3,7 @@
 use crate::app::{App, ViewMode, DIFF_VIEW_MIN_WIDTH, FILE_PANEL_MIN_WIDTH};
 use crate::color;
 use crate::views::{render_blame, render_evolution, render_split, render_unified_pane};
-use oyo_core::FileStatus;
+use oyo_core::{multi::DiffStatus, FileStatus};
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
@@ -91,6 +91,23 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
         width += ch_width;
     }
     out
+}
+
+fn format_ratio(current: usize, total: usize) -> String {
+    let width = total.to_string().len();
+    let current_padded = format!("{:>width$}", current, width = width);
+    format!("{}/{}", current_padded, total)
+}
+
+fn diff_spinner_frame() -> &'static str {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let idx = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 100)
+        % FRAMES.len() as u128;
+    FRAMES[idx as usize]
 }
 
 fn clamp_spans_to_width<'a>(spans: &[Span<'a>], max_width: usize) -> Vec<Span<'a>> {
@@ -335,14 +352,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     // Hunk counter
     let (current_hunk, total_hunks) = app.hunk_info();
     let hunk_text = if total_hunks > 0 {
-        Some(format!("{}/{}", current_hunk, total_hunks))
+        Some(format_ratio(current_hunk, total_hunks))
     } else {
         None
     };
     let hunk_step_text = if app.stepping {
         app.hunk_step_info().and_then(|(current, total)| {
             if current > 0 {
-                Some(format!("{}/{}", current, total))
+                Some(format_ratio(current, total))
             } else {
                 None
             }
@@ -410,27 +427,49 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Build RIGHT section: stats + hunk + file
-    let mut right_spans = vec![
-        Span::styled(
-            format!("+{}", insertions),
-            Style::default().fg(app.theme.success),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("-{}", deletions),
-            Style::default().fg(app.theme.error),
-        ),
-    ];
+    let diff_pending = matches!(
+        app.multi_diff.current_file_diff_status(),
+        DiffStatus::Deferred | DiffStatus::Computing
+    ) || app.view_build_pending()
+        || app.syntax_warmup_pending();
+    let stats_known = insertions > 0 || deletions > 0;
+    let mut right_spans = Vec::new();
     if let Some(ref hunk) = hunk_text {
-        right_spans.push(Span::raw("  "));
         let hunk_label = if let Some(ref hunk_step) = hunk_step_text {
-            format!("hunk {} · {}", hunk, hunk_step)
+            format!("{} {}", hunk_step, hunk)
         } else {
-            format!("hunk {}", hunk)
+            hunk.to_string()
         };
         right_spans.push(Span::styled(
             hunk_label,
             Style::default().fg(app.theme.text_muted),
+        ));
+        right_spans.push(Span::raw("  "));
+    }
+    let spinner = if diff_pending {
+        diff_spinner_frame()
+    } else {
+        " "
+    };
+    right_spans.push(Span::styled(
+        spinner,
+        Style::default().fg(app.theme.text_muted),
+    ));
+    right_spans.push(Span::raw(" "));
+    if diff_pending && !stats_known {
+        right_spans.push(Span::styled(
+            "diffing…",
+            Style::default().fg(app.theme.text_muted),
+        ));
+    } else {
+        right_spans.push(Span::styled(
+            format!("+{}", insertions),
+            Style::default().fg(app.theme.success),
+        ));
+        right_spans.push(Span::raw(" "));
+        right_spans.push(Span::styled(
+            format!("-{}", deletions),
+            Style::default().fg(app.theme.error),
         ));
     }
     right_spans.push(Span::raw("  "));
@@ -490,18 +529,52 @@ fn draw_top_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let (insertions, deletions) = app.stats();
     let file = app.multi_diff.current_file();
     let available_width = area.width as usize;
+    let diff_pending = matches!(
+        app.multi_diff.current_file_diff_status(),
+        DiffStatus::Deferred | DiffStatus::Computing
+    ) || app.view_build_pending()
+        || app.syntax_warmup_pending();
+    let stats_known = insertions > 0 || deletions > 0;
     let mut right_spans = if matches!(app.view_mode, ViewMode::Blame) {
         blame_age_legend_spans(app)
+    } else if diff_pending {
+        if stats_known {
+            vec![
+                Span::styled(
+                    diff_spinner_frame(),
+                    Style::default().fg(app.theme.text_muted),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("+{}", insertions),
+                    Style::default().fg(app.theme.success),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("-{}", deletions),
+                    Style::default().fg(app.theme.error),
+                ),
+                Span::raw(" "),
+            ]
+        } else {
+            vec![
+                Span::styled(
+                    diff_spinner_frame(),
+                    Style::default().fg(app.theme.text_muted),
+                ),
+                Span::raw(" "),
+            ]
+        }
     } else {
         vec![
             Span::styled(
-                format!("-{}", deletions),
-                Style::default().fg(app.theme.error),
-            ),
-            Span::raw("  "),
-            Span::styled(
                 format!("+{}", insertions),
                 Style::default().fg(app.theme.success),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("-{}", deletions),
+                Style::default().fg(app.theme.error),
             ),
             Span::raw(" "),
         ]

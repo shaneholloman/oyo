@@ -1,7 +1,11 @@
 //! Diff computation engine
 
 use crate::change::{Change, ChangeKind, ChangeSpan};
-use similar::{ChangeTag, TextDiff};
+use imara_diff::intern::{InternedInput, TokenSource};
+use imara_diff::{Algorithm, Sink};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::hash::Hash;
+use std::ops::Range;
 use std::path::Path;
 use thiserror::Error;
 
@@ -95,6 +99,35 @@ pub struct DiffEngine {
     word_level: bool,
 }
 
+#[derive(Default)]
+struct ChangeRangeSink {
+    ranges: Vec<(Range<usize>, Range<usize>)>,
+}
+
+impl Sink for ChangeRangeSink {
+    type Out = Vec<(Range<usize>, Range<usize>)>;
+
+    fn process_change(&mut self, before: Range<u32>, after: Range<u32>) {
+        self.ranges.push((
+            before.start as usize..before.end as usize,
+            after.start as usize..after.end as usize,
+        ));
+    }
+
+    fn finish(self) -> Self::Out {
+        self.ranges
+    }
+}
+
+fn diff_ranges<I, T>(algorithm: Algorithm, before: I, after: I) -> Vec<(Range<usize>, Range<usize>)>
+where
+    I: TokenSource<Token = T>,
+    T: Eq + Hash,
+{
+    let input = InternedInput::new(before, after);
+    imara_diff::diff(algorithm, &input, ChangeRangeSink::default())
+}
+
 impl Default for DiffEngine {
     fn default() -> Self {
         Self {
@@ -121,7 +154,6 @@ impl DiffEngine {
 
     /// Compute diff between two strings
     pub fn diff_strings(&self, old: &str, new: &str) -> DiffResult {
-        let text_diff = TextDiff::from_lines(old, new);
         let mut changes = Vec::new();
         let mut significant_changes = Vec::new();
         let mut insertions = 0;
@@ -135,47 +167,74 @@ impl DiffEngine {
         let mut pending_deletes: Vec<(String, usize)> = Vec::new();
         let mut pending_inserts: Vec<(String, usize)> = Vec::new();
 
-        let ops: Vec<_> = text_diff.iter_all_changes().collect();
+        let old_lines: Vec<&str> = old.lines().collect();
+        let new_lines: Vec<&str> = new.lines().collect();
+        let ranges = diff_ranges(Algorithm::Histogram, old, new);
 
-        for change in ops.iter() {
-            match change.tag() {
-                ChangeTag::Equal => {
-                    // Flush any pending changes before processing equal
-                    self.flush_pending_changes(
-                        &mut pending_deletes,
-                        &mut pending_inserts,
-                        &mut changes,
-                        &mut significant_changes,
-                        &mut change_id,
-                        &mut insertions,
-                        &mut deletions,
-                    );
+        let mut old_idx = 0usize;
 
-                    let span = ChangeSpan::equal(change.value().trim_end_matches('\n'))
-                        .with_lines(Some(old_line_num), Some(new_line_num));
+        for (before, after) in ranges {
+            if old_idx < before.start {
+                self.flush_pending_changes(
+                    &mut pending_deletes,
+                    &mut pending_inserts,
+                    &mut changes,
+                    &mut significant_changes,
+                    &mut change_id,
+                    &mut insertions,
+                    &mut deletions,
+                );
+
+                while old_idx < before.start {
+                    let line = old_lines.get(old_idx).copied().unwrap_or("");
+                    let span =
+                        ChangeSpan::equal(line).with_lines(Some(old_line_num), Some(new_line_num));
                     changes.push(Change::single(change_id, span));
                     change_id += 1;
+                    old_idx += 1;
                     old_line_num += 1;
-                    new_line_num += 1;
-                }
-                ChangeTag::Delete => {
-                    pending_deletes.push((
-                        change.value().trim_end_matches('\n').to_string(),
-                        old_line_num,
-                    ));
-                    old_line_num += 1;
-                }
-                ChangeTag::Insert => {
-                    pending_inserts.push((
-                        change.value().trim_end_matches('\n').to_string(),
-                        new_line_num,
-                    ));
                     new_line_num += 1;
                 }
             }
+
+            for idx in before.start..before.end {
+                let line = old_lines.get(idx).copied().unwrap_or("");
+                pending_deletes.push((line.to_string(), old_line_num));
+                old_line_num += 1;
+            }
+
+            for idx in after.start..after.end {
+                let line = new_lines.get(idx).copied().unwrap_or("");
+                pending_inserts.push((line.to_string(), new_line_num));
+                new_line_num += 1;
+            }
+
+            old_idx = before.end;
         }
 
-        // Flush remaining changes
+        if old_idx < old_lines.len() {
+            self.flush_pending_changes(
+                &mut pending_deletes,
+                &mut pending_inserts,
+                &mut changes,
+                &mut significant_changes,
+                &mut change_id,
+                &mut insertions,
+                &mut deletions,
+            );
+
+            while old_idx < old_lines.len() {
+                let line = old_lines.get(old_idx).copied().unwrap_or("");
+                let span =
+                    ChangeSpan::equal(line).with_lines(Some(old_line_num), Some(new_line_num));
+                changes.push(Change::single(change_id, span));
+                change_id += 1;
+                old_idx += 1;
+                old_line_num += 1;
+                new_line_num += 1;
+            }
+        }
+
         self.flush_pending_changes(
             &mut pending_deletes,
             &mut pending_inserts,
@@ -185,6 +244,37 @@ impl DiffEngine {
             &mut insertions,
             &mut deletions,
         );
+
+        let (changes, significant_changes) = if self.context_lines != usize::MAX {
+            let mut id_to_idx = FxHashMap::default();
+            for (idx, change) in changes.iter().enumerate() {
+                id_to_idx.insert(change.id, idx);
+            }
+            let mut include = vec![false; changes.len()];
+            for &change_id in &significant_changes {
+                if let Some(&idx) = id_to_idx.get(&change_id) {
+                    let start = idx.saturating_sub(self.context_lines);
+                    let end = (idx + self.context_lines).min(changes.len().saturating_sub(1));
+                    for slot in include.iter_mut().take(end + 1).skip(start) {
+                        *slot = true;
+                    }
+                }
+            }
+            let significant_set: FxHashSet<usize> = significant_changes.iter().copied().collect();
+            let mut filtered_changes = Vec::new();
+            let mut filtered_significant = Vec::new();
+            for (idx, change) in changes.into_iter().enumerate() {
+                if include.get(idx).copied().unwrap_or(false) {
+                    if significant_set.contains(&change.id) {
+                        filtered_significant.push(change.id);
+                    }
+                    filtered_changes.push(change);
+                }
+            }
+            (filtered_changes, filtered_significant)
+        } else {
+            (changes, significant_changes)
+        };
 
         // Compute hunks by grouping nearby changes
         let hunks = Self::compute_hunks(&significant_changes, &changes);
@@ -208,6 +298,12 @@ impl DiffEngine {
             return hunks;
         }
 
+        let mut id_to_index =
+            FxHashMap::with_capacity_and_hasher(changes.len(), Default::default());
+        for (idx, change) in changes.iter().enumerate() {
+            id_to_index.insert(change.id, idx);
+        }
+
         let mut current_hunk_changes: Vec<usize> = Vec::new();
         let mut current_hunk_old_start: Option<usize> = None;
         let mut current_hunk_new_start: Option<usize> = None;
@@ -218,7 +314,10 @@ impl DiffEngine {
         let mut hunk_id = 0;
 
         for &change_id in significant_changes {
-            let change = match changes.iter().find(|c| c.id == change_id) {
+            let change = match id_to_index
+                .get(&change_id)
+                .and_then(|idx| changes.get(*idx))
+            {
                 Some(c) => c,
                 None => continue,
             };
@@ -401,6 +500,24 @@ fn tokenize_code(line: &str) -> Vec<String> {
     tokens
 }
 
+#[derive(Clone, Copy)]
+struct TokenSlice<'a> {
+    tokens: &'a [&'a str],
+}
+
+impl<'a> TokenSource for TokenSlice<'a> {
+    type Token = &'a str;
+    type Tokenizer = std::iter::Copied<std::slice::Iter<'a, &'a str>>;
+
+    fn tokenize(&self) -> Self::Tokenizer {
+        self.tokens.iter().copied()
+    }
+
+    fn estimate_tokens(&self) -> u32 {
+        self.tokens.len() as u32
+    }
+}
+
 impl DiffEngine {
     /// Compute word-level diff within a line
     fn compute_word_diff(
@@ -414,18 +531,48 @@ impl DiffEngine {
         let new_tokens = tokenize_code(new);
         let old_refs: Vec<&str> = old_tokens.iter().map(|s| s.as_str()).collect();
         let new_refs: Vec<&str> = new_tokens.iter().map(|s| s.as_str()).collect();
-        let word_diff = TextDiff::from_slices(&old_refs, &new_refs);
+        let ranges = diff_ranges(
+            Algorithm::Histogram,
+            TokenSlice { tokens: &old_refs },
+            TokenSlice { tokens: &new_refs },
+        );
         let mut spans = Vec::new();
+        let mut old_idx = 0usize;
 
-        for change in word_diff.iter_all_changes() {
-            let text = change.value().to_string();
-            let span = match change.tag() {
-                ChangeTag::Equal => ChangeSpan::equal(text),
-                ChangeTag::Delete => ChangeSpan::delete(text),
-                ChangeTag::Insert => ChangeSpan::insert(text),
+        for (before, after) in ranges {
+            while old_idx < before.start {
+                let token = old_refs.get(old_idx).copied().unwrap_or("");
+                spans.push(
+                    ChangeSpan::equal(token.to_string()).with_lines(Some(old_line), Some(new_line)),
+                );
+                old_idx += 1;
             }
-            .with_lines(Some(old_line), Some(new_line));
-            spans.push(span);
+
+            for idx in before.start..before.end {
+                let token = old_refs.get(idx).copied().unwrap_or("");
+                spans.push(
+                    ChangeSpan::delete(token.to_string())
+                        .with_lines(Some(old_line), Some(new_line)),
+                );
+            }
+
+            for idx in after.start..after.end {
+                let token = new_refs.get(idx).copied().unwrap_or("");
+                spans.push(
+                    ChangeSpan::insert(token.to_string())
+                        .with_lines(Some(old_line), Some(new_line)),
+                );
+            }
+
+            old_idx = before.end;
+        }
+
+        while old_idx < old_refs.len() {
+            let token = old_refs.get(old_idx).copied().unwrap_or("");
+            spans.push(
+                ChangeSpan::equal(token.to_string()).with_lines(Some(old_line), Some(new_line)),
+            );
+            old_idx += 1;
         }
 
         spans
@@ -563,5 +710,49 @@ mod tests {
             "KeyModifiers should not be inserted, got insert: '{}'",
             insert_content
         );
+    }
+
+    #[test]
+    fn test_hunks_are_contiguous_in_significant_changes() {
+        let engine = DiffEngine::new();
+        let old = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\n";
+        let new = "a\nB\nc\nd\ne\nf\ng\nh\nI\nj\nk\nL\nm\nn\n";
+
+        let result = engine.diff_strings(old, new);
+
+        assert!(
+            result.hunks.len() >= 2,
+            "expected multiple hunks for contiguity test"
+        );
+
+        for hunk in &result.hunks {
+            if hunk.change_ids.is_empty() {
+                continue;
+            }
+            let mut positions = Vec::new();
+            for id in &hunk.change_ids {
+                let pos = result
+                    .significant_changes
+                    .iter()
+                    .position(|sid| sid == id)
+                    .expect("hunk change id should exist in significant_changes");
+                positions.push(pos);
+            }
+            for pair in positions.windows(2) {
+                assert_eq!(
+                    pair[1],
+                    pair[0] + 1,
+                    "hunk change ids should be contiguous in significant_changes"
+                );
+            }
+            let start = positions[0];
+            for (offset, id) in hunk.change_ids.iter().enumerate() {
+                assert_eq!(
+                    result.significant_changes[start + offset],
+                    *id,
+                    "hunk change order should match significant_changes"
+                );
+            }
+        }
     }
 }

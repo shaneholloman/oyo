@@ -6,6 +6,8 @@ mod color;
 mod config;
 mod dashboard;
 mod syntax;
+#[cfg(test)]
+mod test_utils;
 mod time_format;
 mod ui;
 mod views;
@@ -18,8 +20,8 @@ use app::{App, ViewMode};
 use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-        MouseButton, MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -43,6 +45,7 @@ struct Args {
     command: Option<Command>,
 
     /// Files or directories to compare: old_file new_file
+    /// Single file compares against HEAD (like git diff)
     /// Also works as a git external diff tool (git config diff.external oy)
     #[arg(num_args = 0..)]
     paths: Vec<PathBuf>,
@@ -146,6 +149,8 @@ enum InputMode {
         old_path: PathBuf,
         new_path: PathBuf,
     },
+    /// Single file compared against HEAD
+    GitFile { path: PathBuf },
     /// No args - try git uncommitted changes in current directory
     GitUncommitted,
     /// Staged changes (index vs HEAD)
@@ -179,6 +184,10 @@ fn detect_input_mode(paths: &[PathBuf]) -> InputMode {
         InputMode::TwoPaths {
             old_path: paths[0].clone(),
             new_path: paths[1].clone(),
+        }
+    } else if paths.len() == 1 {
+        InputMode::GitFile {
+            path: paths[0].clone(),
         }
     } else if paths.is_empty() {
         // No args - try git uncommitted changes
@@ -243,14 +252,21 @@ fn apply_config_to_app(app: &mut App, config: &config::Config, args: &Args, ligh
     app.diff_bg = config.ui.diff.bg;
     app.diff_fg = config.ui.diff.fg;
     app.diff_highlight = config.ui.diff.highlight;
+    app.diff_defer = config.ui.diff.defer;
+    app.diff_idle_ms = config.ui.diff.idle_ms;
     app.diff_extent_marker = config.ui.diff.extent_marker;
     app.diff_extent_marker_scope = config.ui.diff.extent_marker_scope;
+    app.diff_extent_marker_context = config.ui.diff.extent_marker_context;
     app.blame_enabled = config.ui.blame.enabled;
     app.blame_mode = config.ui.blame.mode;
     app.blame_hunk_hint_enabled = config.ui.blame.hunk_hint;
     app.blame_hunk_hint_enabled = config.ui.blame.hunk_hint;
     app.syntax_mode = config.ui.syntax.mode;
     app.syntax_theme = config.ui.syntax.theme.clone();
+    app.syntax_warmup_active_lines = config.ui.syntax.warmup.active_lines;
+    app.syntax_warmup_pending_lines = config.ui.syntax.warmup.pending_lines;
+    app.syntax_warmup_idle_lines = config.ui.syntax.warmup.idle_lines;
+    app.syntax_warmup_debounce_ms = config.ui.syntax.warmup.debounce_ms;
     app.unified_modified_step_mode = config.ui.unified.modified_step_mode;
     app.split_align_lines = config.ui.split.align_lines;
     app.split_align_fill = config.ui.split.align_fill.clone();
@@ -339,6 +355,58 @@ fn build_diff_from_input_mode(
                 MultiFileDiff::from_file_pair_bytes(new_path.clone(), old_bytes, new_bytes)
             };
             (diff, None)
+        }
+        InputMode::GitFile { path } => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            if !oyo_core::git::is_git_repo(&cwd) {
+                anyhow::bail!(
+                    "Not in a git repository.\n\
+                     \n\
+                     Usage: oy <file>\n\
+                     \n\
+                     Or use: oy <old_file> <new_file>"
+                );
+            }
+
+            let repo_root =
+                oyo_core::git::get_repo_root(&cwd).context("Failed to get git repository root")?;
+            let abs_path = if path.is_absolute() {
+                path.clone()
+            } else {
+                cwd.join(path)
+            };
+            if abs_path.exists() && abs_path.is_dir() {
+                anyhow::bail!("Expected a file path: {}", path.display());
+            }
+
+            let rel_path = abs_path.strip_prefix(&repo_root).with_context(|| {
+                format!("Path is outside the git repository: {}", path.display())
+            })?;
+
+            let head_exists =
+                oyo_core::git::get_file_at_commit_size(&repo_root, "HEAD", rel_path).is_some();
+            let work_exists = abs_path.exists();
+            if !head_exists && !work_exists {
+                anyhow::bail!("File not found in HEAD or working tree: {}", path.display());
+            }
+
+            let old_bytes = if head_exists {
+                oyo_core::git::get_head_content_bytes(&repo_root, rel_path)
+                    .context("Failed to read file from HEAD")?
+            } else {
+                Vec::new()
+            };
+            let new_bytes = if work_exists {
+                std::fs::read(&abs_path)
+                    .context(format!("Failed to read: {}", abs_path.display()))?
+            } else {
+                Vec::new()
+            };
+
+            let diff =
+                MultiFileDiff::from_file_pair_bytes(rel_path.to_path_buf(), old_bytes, new_bytes);
+            let branch = oyo_core::git::get_current_branch(&repo_root).ok();
+            (diff, branch)
         }
         InputMode::GitUncommitted => {
             let cwd = std::env::current_dir().unwrap_or_default();
@@ -449,6 +517,7 @@ fn build_diff_from_input_mode(
         InputMode::None => {
             anyhow::bail!(
                 "Usage: oy <old_file> <new_file>\n\
+                 Usage: oy <file>\n\
                  \n\
                  Or run from a git repository to diff uncommitted changes."
             );
@@ -456,44 +525,6 @@ fn build_diff_from_input_mode(
     };
 
     Ok(Some((multi_diff, git_branch)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_range;
-
-    #[test]
-    fn parse_range_accepts_double_dot() {
-        let (from, to) = parse_range("HEAD~1..HEAD").unwrap();
-        assert_eq!(from, "HEAD~1");
-        assert_eq!(to, "HEAD");
-    }
-
-    #[test]
-    fn parse_range_accepts_triple_dot() {
-        let (from, to) = parse_range("main...feature").unwrap();
-        assert_eq!(from, "main");
-        assert_eq!(to, "feature");
-    }
-
-    #[test]
-    fn parse_range_rejects_empty_bounds() {
-        assert!(parse_range("..HEAD").is_err());
-        assert!(parse_range("HEAD..").is_err());
-        assert!(parse_range("...HEAD").is_err());
-        assert!(parse_range("HEAD...").is_err());
-    }
-
-    #[test]
-    fn parse_range_rejects_extra_separators() {
-        assert!(parse_range("A..B..C").is_err());
-        assert!(parse_range("A...B..C").is_err());
-    }
-
-    #[test]
-    fn parse_range_rejects_missing_separator() {
-        assert!(parse_range("HEAD").is_err());
-    }
 }
 
 fn main() -> Result<()> {
@@ -556,6 +587,9 @@ fn main() -> Result<()> {
             config.ui.syntax.theme = "ansi".to_string();
         }
     }
+    MultiFileDiff::set_diff_max_bytes(config.ui.diff.max_bytes);
+    MultiFileDiff::set_full_context_max_bytes(config.ui.diff.full_context_max_bytes);
+    MultiFileDiff::set_diff_defer(config.ui.diff.defer);
 
     // Compute theme mode: CLI overrides config, default to dark
     let light_mode = match args.theme_mode {
@@ -754,6 +788,7 @@ fn main() -> Result<()> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppExit> {
     let tick_rate = Duration::from_millis(16);
+    let mut pending_event: Option<Event> = None;
 
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
@@ -764,8 +799,17 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
             app.clear_active_on_next_render = false;
         }
 
-        if event::poll(tick_rate)? {
-            match event::read()? {
+        let event = if let Some(event) = pending_event.take() {
+            Some(event)
+        } else if event::poll(tick_rate)? {
+            Some(event::read()?)
+        } else {
+            None
+        };
+
+        if let Some(event) = event {
+            app.mark_user_input();
+            match event {
                 Event::Mouse(me) => {
                     if app.show_help || app.show_path_popup {
                         continue;
@@ -823,7 +867,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         MouseEventKind::ScrollUp => {
                             if app.file_list_focused {
                                 app.prev_file();
-                            } else if app.stepping {
+                            } else if app.stepping && app.current_file_diff_ready() {
                                 app.prev_step();
                             } else {
                                 app.scroll_up();
@@ -832,7 +876,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         MouseEventKind::ScrollDown => {
                             if app.file_list_focused {
                                 app.next_file();
-                            } else if app.stepping {
+                            } else if app.stepping && app.current_file_diff_ready() {
                                 app.next_step();
                             } else {
                                 app.scroll_down();
@@ -841,7 +885,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         _ => {}
                     }
                 }
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                Event::Key(key)
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
                     if app.show_help {
                         match key.code {
                             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
@@ -1114,7 +1160,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         // Step navigation (supports count)
                         KeyCode::Down | KeyCode::Char('j') => {
-                            let count = app.take_count();
+                            let count = if app.pending_count.is_some() {
+                                app.take_count()
+                            } else {
+                                coalesce_key_repeats(key, &mut pending_event)?
+                            };
                             for _ in 0..count {
                                 if app.file_list_focused {
                                     app.next_file();
@@ -1126,7 +1176,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                             }
                         }
                         KeyCode::Up | KeyCode::Char('k') => {
-                            let count = app.take_count();
+                            let count = if app.pending_count.is_some() {
+                                app.take_count()
+                            } else {
+                                coalesce_key_repeats(key, &mut pending_event)?
+                            };
                             for _ in 0..count {
                                 if app.file_list_focused {
                                     app.prev_file();
@@ -1139,30 +1193,41 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         // Hunk navigation (h/l and arrow keys, supports count)
                         KeyCode::Right | KeyCode::Char('l') => {
-                            if app.stepping {
-                                let count = app.take_count();
-                                for _ in 0..count {
-                                    app.next_hunk();
-                                }
+                            let count = if app.pending_count.is_some() {
+                                app.take_count()
                             } else {
-                                // Scroll-only navigation in no-step mode
-                                app.next_hunk_scroll();
+                                coalesce_key_repeats(key, &mut pending_event)?
+                            };
+                            app.defer_view_build_for_jump();
+                            for _ in 0..count {
+                                if app.stepping {
+                                    app.next_hunk();
+                                } else {
+                                    // Scroll-only navigation in no-step mode
+                                    app.next_hunk_scroll();
+                                }
                             }
                         }
                         KeyCode::Left | KeyCode::Char('h') => {
-                            if app.stepping {
-                                let count = app.take_count();
-                                for _ in 0..count {
-                                    app.prev_hunk();
-                                }
+                            let count = if app.pending_count.is_some() {
+                                app.take_count()
                             } else {
-                                // Scroll-only navigation in no-step mode
-                                app.prev_hunk_scroll();
+                                coalesce_key_repeats(key, &mut pending_event)?
+                            };
+                            app.defer_view_build_for_jump();
+                            for _ in 0..count {
+                                if app.stepping {
+                                    app.prev_hunk();
+                                } else {
+                                    // Scroll-only navigation in no-step mode
+                                    app.prev_hunk_scroll();
+                                }
                             }
                         }
                         // Jump to begin/end of current hunk
                         KeyCode::Char('b') => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             if app.stepping {
                                 app.goto_hunk_start();
                             } else {
@@ -1171,6 +1236,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         KeyCode::Char('e') => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             if app.stepping {
                                 app.goto_hunk_end();
                             } else {
@@ -1206,6 +1272,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         KeyCode::Home => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             app.goto_start();
                         }
                         KeyCode::Char('g') => {
@@ -1214,10 +1281,12 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         KeyCode::End | KeyCode::Char('G') => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             app.goto_end();
                         }
                         KeyCode::Char('<') => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             if app.stepping {
                                 app.goto_first_step();
                             } else {
@@ -1226,6 +1295,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
                         }
                         KeyCode::Char('>') => {
                             app.reset_count();
+                            app.defer_view_build_for_jump();
                             if app.stepping {
                                 app.goto_last_step();
                             } else {
@@ -1472,6 +1542,30 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<AppE
     }
 }
 
+fn coalesce_key_repeats(
+    first: KeyEvent,
+    pending_event: &mut Option<Event>,
+) -> std::io::Result<usize> {
+    let mut count = 1usize;
+    let same_key = |next: &KeyEvent| next.code == first.code && next.modifiers == first.modifiers;
+    while event::poll(Duration::from_millis(0))? {
+        let next = event::read()?;
+        match next {
+            Event::Key(key)
+                if same_key(&key)
+                    && matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+            {
+                count += 1;
+            }
+            _ => {
+                *pending_event = Some(next);
+                break;
+            }
+        }
+    }
+    Ok(count)
+}
+
 fn run_dashboard<B: Backend>(
     terminal: &mut Terminal<B>,
     dashboard: &mut Dashboard,
@@ -1633,4 +1727,52 @@ fn run_commit_picker<B: Backend>(
     };
 
     Ok(Some(input_mode))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_input_mode, parse_range, InputMode};
+    use std::path::PathBuf;
+
+    #[test]
+    fn parse_range_accepts_double_dot() {
+        let (from, to) = parse_range("HEAD~1..HEAD").unwrap();
+        assert_eq!(from, "HEAD~1");
+        assert_eq!(to, "HEAD");
+    }
+
+    #[test]
+    fn parse_range_accepts_triple_dot() {
+        let (from, to) = parse_range("main...feature").unwrap();
+        assert_eq!(from, "main");
+        assert_eq!(to, "feature");
+    }
+
+    #[test]
+    fn parse_range_rejects_empty_bounds() {
+        assert!(parse_range("..HEAD").is_err());
+        assert!(parse_range("HEAD..").is_err());
+        assert!(parse_range("...HEAD").is_err());
+        assert!(parse_range("HEAD...").is_err());
+    }
+
+    #[test]
+    fn parse_range_rejects_extra_separators() {
+        assert!(parse_range("A..B..C").is_err());
+        assert!(parse_range("A...B..C").is_err());
+    }
+
+    #[test]
+    fn parse_range_rejects_missing_separator() {
+        assert!(parse_range("HEAD").is_err());
+    }
+
+    #[test]
+    fn detect_input_mode_single_path() {
+        let paths = vec![PathBuf::from("main.rs")];
+        match detect_input_mode(&paths) {
+            InputMode::GitFile { path } => assert_eq!(path, PathBuf::from("main.rs")),
+            _ => panic!("unexpected input mode"),
+        }
+    }
 }

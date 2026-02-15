@@ -836,12 +836,27 @@ pub struct DiffConfig {
     /// Inline diff highlight mode: "word", "text", or "none"
     #[serde(default = "diff_highlight_default")]
     pub highlight: DiffHighlightMode,
+    /// Maximum diff size before stepping is disabled (bytes)
+    #[serde(default = "diff_max_bytes_default")]
+    pub max_bytes: u64,
+    /// Maximum file size to render with full context (bytes)
+    #[serde(default = "diff_full_context_max_bytes_default")]
+    pub full_context_max_bytes: u64,
+    /// Defer diff computation for large files (background compute)
+    #[serde(default = "diff_defer_default")]
+    pub defer: bool,
+    /// Idle time (ms) before background diff computation
+    #[serde(default = "diff_idle_ms_default")]
+    pub idle_ms: u64,
     /// Extent marker color mode: "neutral" or "diff"
     #[serde(default = "diff_extent_marker_default")]
     pub extent_marker: DiffExtentMarkerMode,
     /// Extent marker scope: "progress" or "hunk"
     #[serde(default = "diff_extent_marker_scope_default")]
     pub extent_marker_scope: DiffExtentMarkerScope,
+    /// Show extent markers on unchanged context lines within a hunk
+    #[serde(default = "diff_extent_marker_context_default")]
+    pub extent_marker_context: bool,
 }
 
 impl Default for DiffConfig {
@@ -850,8 +865,13 @@ impl Default for DiffConfig {
             bg: diff_bg_default(),
             fg: diff_fg_default(),
             highlight: diff_highlight_default(),
+            max_bytes: diff_max_bytes_default(),
+            full_context_max_bytes: diff_full_context_max_bytes_default(),
+            defer: diff_defer_default(),
+            idle_ms: diff_idle_ms_default(),
             extent_marker: diff_extent_marker_default(),
             extent_marker_scope: diff_extent_marker_scope_default(),
+            extent_marker_context: diff_extent_marker_context_default(),
         }
     }
 }
@@ -868,12 +888,32 @@ fn diff_highlight_default() -> DiffHighlightMode {
     DiffHighlightMode::Text
 }
 
+fn diff_max_bytes_default() -> u64 {
+    16 * 1024 * 1024
+}
+
+fn diff_full_context_max_bytes_default() -> u64 {
+    2 * 1024 * 1024
+}
+
+fn diff_defer_default() -> bool {
+    true
+}
+
+fn diff_idle_ms_default() -> u64 {
+    250
+}
+
 fn diff_extent_marker_default() -> DiffExtentMarkerMode {
     DiffExtentMarkerMode::Neutral
 }
 
 fn diff_extent_marker_scope_default() -> DiffExtentMarkerScope {
     DiffExtentMarkerScope::Progress
+}
+
+fn diff_extent_marker_context_default() -> bool {
+    false
 }
 
 /// Context folding display mode
@@ -1053,6 +1093,7 @@ pub enum SyntaxMode {
 pub struct SyntaxConfig {
     pub mode: SyntaxMode,
     pub theme: String,
+    pub warmup: SyntaxWarmupConfig,
 }
 
 impl Default for SyntaxConfig {
@@ -1060,6 +1101,36 @@ impl Default for SyntaxConfig {
         Self {
             mode: SyntaxMode::On,
             theme: String::new(),
+            warmup: SyntaxWarmupConfig::default(),
+        }
+    }
+}
+
+/// Syntax warmup configuration (background checkpointing)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct SyntaxWarmupConfig {
+    /// Lines per tick when actively navigating
+    #[serde(default = "syntax_warmup_active_lines_default")]
+    pub active_lines: usize,
+    /// Lines per tick when waiting on a pending checkpoint
+    #[serde(default = "syntax_warmup_pending_lines_default")]
+    pub pending_lines: usize,
+    /// Lines per tick when idle
+    #[serde(default = "syntax_warmup_idle_lines_default")]
+    pub idle_lines: usize,
+    /// Debounce window (ms) before warming a new viewport target
+    #[serde(default = "syntax_warmup_debounce_ms_default")]
+    pub debounce_ms: u64,
+}
+
+impl Default for SyntaxWarmupConfig {
+    fn default() -> Self {
+        Self {
+            active_lines: syntax_warmup_active_lines_default(),
+            pending_lines: syntax_warmup_pending_lines_default(),
+            idle_lines: syntax_warmup_idle_lines_default(),
+            debounce_ms: syntax_warmup_debounce_ms_default(),
         }
     }
 }
@@ -1072,6 +1143,7 @@ enum SyntaxConfigDef {
         #[serde(default)]
         mode: SyntaxMode,
         theme: Option<String>,
+        warmup: Option<SyntaxWarmupConfig>,
     },
 }
 
@@ -1082,12 +1154,33 @@ impl From<SyntaxConfigDef> for SyntaxConfig {
                 mode,
                 ..Self::default()
             },
-            SyntaxConfigDef::Detailed { mode, theme } => Self {
+            SyntaxConfigDef::Detailed {
+                mode,
+                theme,
+                warmup,
+            } => Self {
                 mode,
                 theme: theme.unwrap_or_default(),
+                warmup: warmup.unwrap_or_default(),
             },
         }
     }
+}
+
+fn syntax_warmup_active_lines_default() -> usize {
+    100
+}
+
+fn syntax_warmup_pending_lines_default() -> usize {
+    300
+}
+
+fn syntax_warmup_idle_lines_default() -> usize {
+    1_000
+}
+
+fn syntax_warmup_debounce_ms_default() -> u64 {
+    80
 }
 
 /// Playback configuration

@@ -18,7 +18,8 @@ thiserror = "2.0"
 anyhow = "1.0"
 
 # Diff engine
-similar = { version = "2.6", features = ["unicode"] }
+imara-diff = "0.1"
+rustc-hash = "1.1"
 
 # TUI
 ratatui = "0.29"
@@ -30,6 +31,7 @@ tokio = { version = "1.0", features = ["full"] }
 
 # CLI
 clap = { version = "4.0", features = ["derive"] }
+flate2 = "1.0"
 
 # Config
 toml = "0.8"

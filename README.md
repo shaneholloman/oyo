@@ -106,6 +106,14 @@ oy
 oy old.rs new.rs
 ```
 
+### Compare a file against HEAD
+
+```bash
+oy path/to/file.rs
+```
+
+Runs a working-tree vs `HEAD` diff for that file (like `git diff path/to/file.rs`).
+
 ### Commit picker
 
 ```bash
@@ -262,8 +270,13 @@ hunk = "none"               # "none" | "hunk" | "file"
 # bg = false                # Full-line diff background (true/false)
 # fg = "theme"              # "theme" or "syntax"
 # highlight = "text"        # "text" | "word" | "none"
+# max_bytes = 16777216      # Defer diffing above this size (bytes)
+# full_context_max_bytes = 2097152  # Full-context render up to this size (bytes)
+# defer = true              # Defer large diffs and compute in background
+# idle_ms = 250             # Idle time before background diff compute
 # extent_marker = "neutral" # "neutral" or "diff"
 # extent_marker_scope = "progress" # "progress" or "hunk"
+# extent_marker_context = false # show extent markers on unchanged lines
 # [ui.blame]
 # enabled = false           # Show git blame hints (opt-in)
 # mode = "one_shot"         # "one_shot" or "toggle"
@@ -283,6 +296,11 @@ hunk = "none"               # "none" | "hunk" | "file"
 #   mode = "on"              # "on" or "off"
 #   theme = "tokyonight"     # builtin name or "custom.tmTheme" (from ~/.config/oyo/themes)
 #                             # default: ui.theme.name, fallback to "ansi"
+#   [ui.syntax.warmup]
+#   active_lines = 100       # lines per tick while navigating
+#   pending_lines = 300      # lines per tick while catching up to a pending checkpoint
+#   idle_lines = 1000        # lines per tick while idle
+#   debounce_ms = 80         # wait before warming a new viewport target
 syntax = "on"
 # [ui.unified]
 # modified_step_mode = "mixed" # "mixed" or "modified" (unified pane only)
@@ -330,6 +348,10 @@ name = "tokyonight"
 fg = "syntax"
 bg = true
 highlight = "text"
+max_bytes = 16777216
+full_context_max_bytes = 2097152
+defer = true
+idle_ms = 250
 extent_marker = "diff"
 extent_marker_scope = "hunk"
 

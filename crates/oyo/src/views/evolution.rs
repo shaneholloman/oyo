@@ -31,7 +31,7 @@ fn hunk_overflow_wrapped_evolution(
     let mut start: Option<usize> = None;
     let mut end: Option<usize> = None;
 
-    for line in view_lines {
+    for line in view_lines.iter() {
         if matches!(line.kind, LineKind::Deleted | LineKind::PendingDelete) {
             continue;
         }
@@ -82,19 +82,31 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         .current_navigator()
         .set_show_hunk_extent_while_stepping(show_extent);
     let view_lines = app.current_view_with_frame(animation_frame);
+    let mut scroll_offset = app.render_scroll_offset();
+    let debug_enabled = super::view_debug_enabled();
+    if debug_enabled {
+        crate::syntax::syntax_debug_reset();
+    }
     let step_direction = app.multi_diff.current_step_direction();
     let mut display_len = 0usize;
+    let mut clamped_scroll = false;
     if !app.line_wrap {
         let (len, _) = crate::app::display_metrics(
             &view_lines,
             app.view_mode,
             app.animation_phase,
-            app.scroll_offset,
+            scroll_offset,
             step_direction,
             app.split_align_lines,
         );
-        app.clamp_scroll(len, visible_height, app.allow_overscroll());
-        display_len = len;
+        let total_len = app.render_total_lines(len);
+        let scroll_before = app.scroll_offset;
+        app.clamp_scroll(total_len, visible_height, app.allow_overscroll());
+        clamped_scroll = app.scroll_offset != scroll_before;
+        display_len = total_len;
+    }
+    if clamped_scroll {
+        scroll_offset = app.render_scroll_offset();
     }
     let debug_target = app.syntax_scope_target(&view_lines);
     let pending_insert_only = if app.stepping {
@@ -139,7 +151,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
                 &view_lines,
                 current_hunk,
                 visible_width,
-                app.scroll_offset,
+                scroll_offset,
                 visible_height,
             )
             .unwrap_or((false, false))
@@ -166,14 +178,50 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut display_line_num = 0usize;
     let mut max_line_width: usize = 0;
     let wrap_width = visible_width;
+    let syntax_window = if app.line_wrap {
+        Some(super::syntax_highlight_window(
+            scroll_offset,
+            visible_height,
+        ))
+    } else {
+        None
+    };
+    let warmup_window = super::syntax_highlight_window(scroll_offset, visible_height);
+    app.begin_syntax_warmup_frame();
     let mut primary_display_idx: Option<usize> = None;
     let mut active_display_idx: Option<usize> = None;
     let hunk_preview_mode = app.multi_diff.current_navigator().state().hunk_preview_mode;
     let animation_phase = app.animation_phase;
+    let mut has_visible = false;
+    for line in view_lines.iter() {
+        match line.kind {
+            LineKind::Deleted => {}
+            LineKind::PendingDelete => {
+                if hunk_preview_mode {
+                    continue;
+                }
+                if !line.is_active_change {
+                    continue;
+                }
+                if animation_phase != AnimationPhase::Idle {
+                    has_visible = true;
+                    break;
+                }
+            }
+            _ => {
+                has_visible = true;
+                break;
+            }
+        }
+    }
+    let show_deleted_fallback = !has_visible;
     let is_visible = |line: &ViewLine| -> bool {
         match line.kind {
-            LineKind::Deleted => false,
+            LineKind::Deleted => show_deleted_fallback,
             LineKind::PendingDelete => {
+                if show_deleted_fallback {
+                    return true;
+                }
                 if hunk_preview_mode {
                     return false;
                 }
@@ -246,9 +294,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
             display_idx += 1;
         }
         cursor_display
-            .map(|idx| {
-                idx >= app.scroll_offset && idx < app.scroll_offset.saturating_add(visible_height)
-            })
+            .map(|idx| idx >= scroll_offset && idx < scroll_offset.saturating_add(visible_height))
             .unwrap_or(false)
     };
     let mut prev_visible_hunk_map: Vec<Option<usize>> = vec![None; view_lines.len()];
@@ -309,7 +355,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         let display_idx = display_line_num - 1;
 
         // Handle scrolling - when wrapping, we need all lines
-        if !app.line_wrap && display_line_num <= app.scroll_offset {
+        if !app.line_wrap && display_line_num <= scroll_offset {
             continue;
         }
         if !app.line_wrap && gutter_lines.len() >= visible_height {
@@ -413,6 +459,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
 
         // Gutter marker: primary marker for focus, extent marker for hunk nav, blank otherwise
         let is_primary = view_line.is_primary_active || fallback_primary == Some(raw_idx);
+        let show_extent = super::show_extent_marker(app, view_line);
         let (active_marker, active_style) = if is_primary {
             (
                 primary_marker.as_str(),
@@ -420,7 +467,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(app.theme.primary)
                     .add_modifier(Modifier::BOLD),
             )
-        } else if view_line.show_hunk_extent {
+        } else if show_extent {
             (
                 extent_marker.as_str(),
                 super::extent_marker_style(
@@ -449,7 +496,27 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         // Build content line (scrollable)
         let mut content_spans: Vec<Span<'static>> = Vec::new();
         let mut used_syntax = false;
-        let allow_syntax = app.syntax_enabled()
+        let (line_display_start, line_display_end) = if app.line_wrap {
+            let text = view_spans_to_text(&view_line.spans);
+            let wrap_hint = wrap_count_for_text(&text, wrap_width).max(1);
+            let line_display_start = display_len;
+            let line_display_end = line_display_start.saturating_add(wrap_hint.saturating_sub(1));
+            (line_display_start, line_display_end)
+        } else {
+            (display_line_num, display_line_num)
+        };
+        let in_syntax_window = if app.line_wrap {
+            super::in_syntax_window(syntax_window, line_display_start, line_display_end)
+        } else {
+            true
+        };
+        let in_warmup_window = if app.line_wrap {
+            super::in_syntax_window(Some(warmup_window), line_display_start, line_display_end)
+        } else {
+            true
+        };
+        let allow_syntax = in_syntax_window
+            && app.syntax_enabled()
             && match app.evo_syntax {
                 crate::config::EvoSyntaxMode::Context => !view_line.has_changes,
                 crate::config::EvoSyntaxMode::Full => !view_line.is_active_change,
@@ -474,6 +541,11 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
                 view_line.new_line.or(view_line.old_line)
             };
             let line_num = line_num.filter(|num| *num > 0);
+            if in_warmup_window {
+                if let Some(line_num) = line_num {
+                    app.record_syntax_warmup_line(side, line_num);
+                }
+            }
             if let Some(spans) = app.syntax_spans_for_line(side, line_num) {
                 content_spans = spans;
                 used_syntax = true;
@@ -742,26 +814,45 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
+    app.commit_syntax_warmup_frame();
+
     if app.line_wrap {
         app.ensure_active_visible_if_needed_wrapped(
             visible_height,
             display_len,
             primary_display_idx.or(active_display_idx),
         );
-        app.clamp_scroll(display_len, visible_height, app.allow_overscroll());
+        let total_len = app.render_total_lines(display_len);
+        let scroll_before = app.scroll_offset;
+        app.clamp_scroll(total_len, visible_height, app.allow_overscroll());
+        if app.scroll_offset != scroll_before {
+            scroll_offset = app.render_scroll_offset();
+        }
     }
 
     // Clamp horizontal scroll
     app.clamp_horizontal_scroll(max_line_width, visible_width);
 
     app.set_current_max_line_width(max_line_width);
+    if debug_enabled {
+        let extra = super::syntax_debug_extra();
+        super::maybe_log_view_debug(
+            app,
+            view_lines.as_ref(),
+            "evolution",
+            visible_height,
+            visible_width,
+            scroll_offset,
+            extra,
+        );
+    }
 
     // Background style (if set)
     let bg_style = app.theme.background.map(|bg| Style::default().bg(bg));
 
     // Render gutter (no horizontal scroll)
     let mut gutter_paragraph = if app.line_wrap {
-        Paragraph::new(gutter_lines).scroll((app.scroll_offset as u16, 0))
+        Paragraph::new(gutter_lines).scroll((scroll_offset as u16, 0))
     } else {
         Paragraph::new(gutter_lines)
     };
@@ -789,7 +880,7 @@ pub fn render_evolution(frame: &mut Frame, app: &mut App, area: Rect) {
         let mut content_paragraph = if app.line_wrap {
             Paragraph::new(content_lines)
                 .wrap(Wrap { trim: false })
-                .scroll((app.scroll_offset as u16, 0))
+                .scroll((scroll_offset as u16, 0))
         } else {
             Paragraph::new(content_lines)
         };

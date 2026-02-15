@@ -2,7 +2,53 @@ use super::utils::{
     allow_overscroll_state, evolution_display_metrics, max_scroll, split_display_metrics,
 };
 use super::*;
+use crate::test_utils::{DiffSettingsGuard, TestApp};
 use oyo_core::{LineKind, MultiFileDiff, StepDirection, ViewLine};
+use std::sync::{Mutex, MutexGuard};
+
+static VIEW_DEBUG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct ViewDebugEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    old_view: Option<std::ffi::OsString>,
+    old_view_nav: Option<std::ffi::OsString>,
+    old_view_file: Option<std::ffi::OsString>,
+}
+
+impl ViewDebugEnvGuard {
+    fn new(path: &std::path::Path) -> Self {
+        let lock = VIEW_DEBUG_ENV_LOCK.lock().unwrap();
+        let old_view = std::env::var_os("OYO_DEBUG_VIEW");
+        let old_view_nav = std::env::var_os("OYO_DEBUG_VIEW_NAV");
+        let old_view_file = std::env::var_os("OYO_DEBUG_VIEW_FILE");
+        std::env::set_var("OYO_DEBUG_VIEW", "1");
+        std::env::set_var("OYO_DEBUG_VIEW_NAV", "1");
+        std::env::set_var("OYO_DEBUG_VIEW_FILE", path);
+        Self {
+            _lock: lock,
+            old_view,
+            old_view_nav,
+            old_view_file,
+        }
+    }
+}
+
+impl Drop for ViewDebugEnvGuard {
+    fn drop(&mut self) {
+        match &self.old_view {
+            Some(val) => std::env::set_var("OYO_DEBUG_VIEW", val),
+            None => std::env::remove_var("OYO_DEBUG_VIEW"),
+        }
+        match &self.old_view_nav {
+            Some(val) => std::env::set_var("OYO_DEBUG_VIEW_NAV", val),
+            None => std::env::remove_var("OYO_DEBUG_VIEW_NAV"),
+        }
+        match &self.old_view_file {
+            Some(val) => std::env::set_var("OYO_DEBUG_VIEW_FILE", val),
+            None => std::env::remove_var("OYO_DEBUG_VIEW_FILE"),
+        }
+    }
+}
 
 #[test]
 fn test_allow_overscroll_state() {
@@ -130,51 +176,107 @@ fn test_split_metrics_fallback_when_no_primary() {
     assert_eq!(idx, Some(1));
 }
 
-fn make_app_with_two_hunks() -> App {
-    let old_lines: Vec<String> = (1..=25).map(|i| format!("line{}", i)).collect();
+fn make_app_with_two_hunks() -> TestApp {
+    TestApp::new_default(|| {
+        let old_lines: Vec<String> = (1..=25).map(|i| format!("line{}", i)).collect();
+        let mut new_lines = old_lines.clone();
+        new_lines[1] = "line2-new".to_string();
+        new_lines[19] = "line20-new".to_string();
+        let old = old_lines.join("\n");
+        let new = new_lines.join("\n");
+
+        let multi_diff = MultiFileDiff::from_file_pair(
+            std::path::PathBuf::from("a.txt"),
+            std::path::PathBuf::from("a.txt"),
+            old,
+            new,
+        );
+        let mut app = App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None);
+        app.stepping = false;
+        app.enter_no_step_mode();
+        app
+    })
+}
+
+fn make_app_with_unified_hunk() -> TestApp {
+    TestApp::new_default(|| {
+        let old = "one\ntwo\nthree".to_string();
+        let new = "one\nTWO\nthree".to_string();
+        let multi_diff = MultiFileDiff::from_file_pair(
+            std::path::PathBuf::from("a.txt"),
+            std::path::PathBuf::from("a.txt"),
+            old,
+            new,
+        );
+        let mut app = App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None);
+        app.stepping = false;
+        app.enter_no_step_mode();
+        app
+    })
+}
+
+fn make_app_with_unified_hunk_two_changes() -> TestApp {
+    TestApp::new_default(|| {
+        let old = "one\ntwo\nthree\nfour".to_string();
+        let new = "ONE\nTWO\nthree\nfour".to_string();
+        let multi_diff = MultiFileDiff::from_file_pair(
+            std::path::PathBuf::from("a.txt"),
+            std::path::PathBuf::from("a.txt"),
+            old,
+            new,
+        );
+        App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None)
+    })
+}
+
+fn make_large_app(lines: usize, change_line: usize) -> App {
+    let old_lines: Vec<String> = (0..lines).map(|i| format!("line{}", i)).collect();
     let mut new_lines = old_lines.clone();
-    new_lines[1] = "line2-new".to_string();
-    new_lines[19] = "line20-new".to_string();
+    new_lines[change_line] = format!("LINE{}", change_line);
     let old = old_lines.join("\n");
     let new = new_lines.join("\n");
 
-    let multi_diff = MultiFileDiff::from_file_pair(
+    let mut multi_diff = MultiFileDiff::from_file_pair(
         std::path::PathBuf::from("a.txt"),
         std::path::PathBuf::from("a.txt"),
-        old,
-        new,
+        old.clone(),
+        new.clone(),
     );
+    let diff = MultiFileDiff::compute_diff(&old, &new);
+    multi_diff.apply_diff_result(0, diff);
+    multi_diff.ensure_full_navigator(0);
+
     let mut app = App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None);
     app.stepping = false;
+    app.no_step_auto_jump_on_enter = false;
     app.enter_no_step_mode();
     app
 }
 
-fn make_app_with_unified_hunk() -> App {
-    let old = "one\ntwo\nthree".to_string();
-    let new = "one\nTWO\nthree".to_string();
-    let multi_diff = MultiFileDiff::from_file_pair(
-        std::path::PathBuf::from("a.txt"),
-        std::path::PathBuf::from("a.txt"),
-        old,
-        new,
-    );
-    let mut app = App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None);
-    app.stepping = false;
-    app.enter_no_step_mode();
-    app
-}
+fn make_large_step_app(lines: usize, change_lines: &[usize]) -> App {
+    let old_lines: Vec<String> = (0..lines).map(|i| format!("line{}", i)).collect();
+    let mut new_lines = old_lines.clone();
+    for &idx in change_lines {
+        if idx < new_lines.len() {
+            new_lines[idx] = format!("LINE{}", idx);
+        }
+    }
+    let old = old_lines.join("\n");
+    let new = new_lines.join("\n");
 
-fn make_app_with_unified_hunk_two_changes() -> App {
-    let old = "one\ntwo\nthree\nfour".to_string();
-    let new = "ONE\nTWO\nthree\nfour".to_string();
-    let multi_diff = MultiFileDiff::from_file_pair(
+    let mut multi_diff = MultiFileDiff::from_file_pair(
         std::path::PathBuf::from("a.txt"),
         std::path::PathBuf::from("a.txt"),
-        old,
-        new,
+        old.clone(),
+        new.clone(),
     );
-    App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None)
+    let diff = MultiFileDiff::compute_diff(&old, &new);
+    multi_diff.apply_diff_result(0, diff);
+    multi_diff.ensure_full_navigator(0);
+
+    let mut app = App::new(multi_diff, ViewMode::UnifiedPane, 0, false, None);
+    app.no_step_auto_jump_on_enter = false;
+    app
 }
 
 #[test]
@@ -293,6 +395,7 @@ fn test_hunk_step_info_counts_applied_changes() {
 
 #[test]
 fn test_no_step_snapshot_restores_cursor_or_jumps() {
+    let _guard = DiffSettingsGuard::default();
     let old_lines: Vec<String> = (1..=25).map(|i| format!("line{}", i)).collect();
     let mut new_lines = old_lines.clone();
     new_lines[1] = "line2-new".to_string();
@@ -328,6 +431,7 @@ fn test_no_step_snapshot_restores_cursor_or_jumps() {
 
 #[test]
 fn test_no_step_cursor_stable_through_file_cycles() {
+    let _guard = DiffSettingsGuard::default();
     let old_lines: Vec<String> = (1..=25).map(|i| format!("line{}", i)).collect();
     let mut new_lines = old_lines.clone();
     new_lines[1] = "line2-new".to_string();
@@ -356,4 +460,195 @@ fn test_no_step_cursor_stable_through_file_cycles() {
     let cursor_after = app.multi_diff.current_navigator().state().cursor_change;
 
     assert_eq!(first_cursor, cursor_after);
+}
+
+#[test]
+fn test_windowed_view_tracks_scroll_offset_in_no_step_large_file() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_app(600, 320);
+    app.last_viewport_height = 25;
+    app.scroll_offset = 250;
+
+    let view = app.current_view_with_frame(AnimationFrame::Idle);
+
+    assert!(app.view_windowed());
+    let start = app.view_window_start();
+    assert!(start <= app.scroll_offset);
+    assert_eq!(app.render_scroll_offset(), app.scroll_offset - start);
+
+    let span = app.last_viewport_height.max(20).saturating_mul(4).max(200);
+    assert!(view.len() <= span.saturating_add(1));
+}
+
+#[test]
+fn test_step_jump_waits_for_view_rebuild_before_scroll() {
+    let _guard = DiffSettingsGuard::new(64);
+    let change_lines: Vec<usize> = (0..600).collect();
+    let mut app = make_large_step_app(600, &change_lines);
+    app.view_mode = ViewMode::Split;
+    app.split_align_lines = true;
+    app.last_viewport_height = 25;
+
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    app.defer_view_build_for_jump();
+    app.goto_last_step();
+    assert!(app.needs_scroll_to_active);
+
+    app.ensure_active_visible_if_needed(app.last_viewport_height);
+    assert!(
+        app.needs_scroll_to_active,
+        "deferred view should keep active scroll pending"
+    );
+
+    app.ensure_active_visible_if_needed(app.last_viewport_height);
+    assert!(!app.needs_scroll_to_active);
+    let state = app.multi_diff.current_navigator().state().clone();
+    let window_start = app.view_window_start();
+    let pending = app.view_build_pending();
+    let scroll_offset = app.scroll_offset;
+    assert!(
+        scroll_offset > 0,
+        "scroll_offset={} window_start={} pending={} active_change={:?} current_step={} step_dir={:?}",
+        scroll_offset,
+        window_start,
+        pending,
+        state.active_change,
+        state.current_step,
+        state.step_direction
+    );
+    assert!(window_start > 0);
+}
+
+#[test]
+fn test_no_step_end_scroll_does_not_shift_window() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_app(600, 320);
+    app.last_viewport_height = 72;
+    let total_len = app.multi_diff.current_navigator().diff().changes.len();
+    let max = max_scroll(total_len, app.last_viewport_height, app.allow_overscroll());
+    app.scroll_offset = max;
+
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    let start = app.view_window_start();
+
+    app.scroll_down();
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+
+    assert_eq!(app.scroll_offset, max);
+    assert_eq!(app.view_window_start(), start);
+    assert_eq!(app.render_scroll_offset(), app.scroll_offset - start);
+}
+
+#[test]
+fn test_no_step_goto_end_preserves_hunk_scope() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_app(600, 599);
+    app.view_mode = ViewMode::Split;
+    app.split_align_lines = true;
+    app.last_viewport_height = 25;
+
+    app.goto_last_hunk_scroll();
+    let view = app.current_view_with_frame(AnimationFrame::Idle);
+    let state = app.multi_diff.current_navigator().state();
+    assert!(state.last_nav_was_hunk);
+    assert!(view.iter().any(|line| line.show_hunk_extent));
+
+    app.goto_end();
+    let view = app.current_view_with_frame(AnimationFrame::Idle);
+    let state = app.multi_diff.current_navigator().state();
+    assert!(state.last_nav_was_hunk);
+    assert!(view.iter().any(|line| line.show_hunk_extent));
+}
+
+#[test]
+fn test_no_step_goto_end_updates_hunk_scope_after_scroll() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_step_app(600, &[10, 590]);
+    app.stepping = false;
+    app.no_step_auto_jump_on_enter = false;
+    app.enter_no_step_mode();
+    app.view_mode = ViewMode::Split;
+    app.split_align_lines = true;
+    app.last_viewport_height = 25;
+
+    app.goto_hunk_index_scroll(0);
+    app.goto_end();
+    let view = app.current_view_with_frame(AnimationFrame::Idle);
+    let state = app.multi_diff.current_navigator().state();
+    assert!(state.last_nav_was_hunk);
+    assert!(view.iter().any(|line| line.show_hunk_extent));
+}
+
+#[test]
+fn test_no_step_hunk_scope_shows_extent_in_windowed_view() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_app(600, 320);
+    app.last_viewport_height = 25;
+
+    app.next_hunk_scroll();
+    let view = app.current_view_with_frame(AnimationFrame::Idle);
+
+    let state = app.multi_diff.current_navigator().state();
+    assert!(state.last_nav_was_hunk);
+    assert!(state.cursor_change.is_some());
+    assert!(app.view_windowed());
+    assert!(view.iter().any(|line| line.show_hunk_extent));
+}
+
+#[test]
+fn test_step_hunk_nav_clears_view_build_defer_in_large_file() {
+    let _guard = DiffSettingsGuard::new(64);
+    let mut app = make_large_step_app(600, &[50, 450]);
+    app.last_viewport_height = 25;
+
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    app.next_hunk();
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    app.defer_view_build_for_jump();
+    assert!(app.view_build_defer);
+    let hunk_before = app.multi_diff.current_navigator().state().current_hunk;
+    app.next_hunk();
+    let hunk_after = app.multi_diff.current_navigator().state().current_hunk;
+    assert_ne!(hunk_before, hunk_after);
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    assert!(
+        !app.view_build_pending(),
+        "hunk nav should rebuild immediately without pending view"
+    );
+
+    app.defer_view_build_for_jump();
+    assert!(app.view_build_defer);
+    app.prev_hunk();
+    let hunk_back = app.multi_diff.current_navigator().state().current_hunk;
+    assert_ne!(hunk_after, hunk_back);
+    let _ = app.current_view_with_frame(AnimationFrame::Idle);
+    assert!(
+        !app.view_build_pending(),
+        "reverse hunk nav should rebuild immediately without pending view"
+    );
+}
+
+#[test]
+fn test_view_nav_logging_emits_entry() {
+    let _guard = DiffSettingsGuard::default();
+    let path = std::env::temp_dir().join(format!("oyo_view_nav_test_{}.log", std::process::id()));
+    let _guard = ViewDebugEnvGuard::new(&path);
+    let _ = std::fs::remove_file(&path);
+
+    let old = "line1\nline2\nline3\n";
+    let new = "line1\nLINE2\nline3\n";
+    let diff = MultiFileDiff::from_file_pair(
+        std::path::PathBuf::from("a.txt"),
+        std::path::PathBuf::from("a.txt"),
+        old.to_string(),
+        new.to_string(),
+    );
+    let mut app = App::new(diff, ViewMode::UnifiedPane, 0, false, None);
+
+    app.next_step();
+
+    let log = std::fs::read_to_string(&path).expect("read nav log");
+    assert!(log.contains("OYO_VIEW_NAV"), "missing nav log header");
+    assert!(log.contains("action=step_down"), "missing step_down action");
+    assert!(log.contains("moved=true"), "expected moved=true for step");
 }
