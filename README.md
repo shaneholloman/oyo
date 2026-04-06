@@ -51,7 +51,6 @@ oyo does **not** replace classic diffs, it adds a new way to review them.
   - **Evolution**: Watch the file evolve, deletions simply disappear
   - **Blame**: Per-line git blame gutter (opt-in)
 - **Inline review comments**: Add/update/remove line and hunk comments across views; printed to stdout on quit
-- **`@` mention picker**: Mention changed or repo files (gitignore-aware), with optional `fzf` ranking
 - **Word-level diffing**: See exactly which words changed within a line
 - **Multi-file support**: Navigate between changed files with preserved positions
 - **Search**: Regex search with to jump between matches
