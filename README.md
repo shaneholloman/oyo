@@ -68,6 +68,12 @@ oyo does **not** replace classic diffs, it adds a new way to review them.
 
 ## Installation
 
+### npm (macOS, Linux x64/arm64 glibc)
+
+```bash
+npm i -g @ahkohd/oyo
+```
+
 ### Homebrew (macOS/Linux)
 
 ```bash
@@ -83,7 +89,7 @@ paru -S oyo
 ### Cargo
 
 ```bash
-cargo install oyo
+cargo install oyo --locked --force
 ```
 
 ## Usage
